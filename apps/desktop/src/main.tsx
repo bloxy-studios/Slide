@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { FormEvent, ReactNode } from "react";
 import { columnLabels, defaultColumns, listRows, localTime, processBatch, statusLabels } from "./catalog";
@@ -82,12 +82,16 @@ function App() {
     setOutcomes([]); setExtensionProfile("");
   }, [account]);
 
+  const showSearch = useEffectEvent(() => {
+    navigate("Workspaces");
+    requestAnimationFrame(() => search.current?.focus());
+  });
+
   useEffect(() => {
     function shortcut(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !dialog.current?.open) {
         e.preventDefault();
-        setTab("Workspaces");
-        requestAnimationFrame(() => search.current?.focus());
+        showSearch();
       }
     }
     window.addEventListener("keydown", shortcut);
