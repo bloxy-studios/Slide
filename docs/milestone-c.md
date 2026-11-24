@@ -10,7 +10,7 @@ Create two workspaces with launch URL `http://127.0.0.1:4320/`. Select **Direct*
 
 ## Capability boundaries
 
-- Workspaces without a connection choice use **System default**, leaving Chromium's proxy settings untouched. Choose **Direct** to bypass the system proxy for that workspace.
+- Workspaces without a connection choice use **System default**, leaving Chromium's proxy settings untouched. Choose **Direct** to bypass the system proxy for that workspace. The batch fixture probe for **System default** measures direct reachability only, not the system route.
 
 - The required HTTP proxy launch path is enabled for bundled Chromium on macOS arm64. The manager checks TCP reachability before starting the browser and never substitutes Direct for a required connection. Chromium applies one explicit HTTP proxy without an implicit loopback exception. This is browser routing, not a system-wide network or DNS isolation guarantee. The controlled fixture verifies HTTP navigation; this does not establish general HTTPS tunneling, arbitrary browser extension/background traffic, or third-party proxy-provider compatibility.
 - Proxy endpoints and assignments are local account metadata. They cannot contain credentials. The test form sends temporary synthetic Basic credentials only to a loopback HTTP proxy; Slide does not save them or pass them to child processes. Browser authentication is handled by Chromium's own prompt. HTTP Basic is not suitable for sending secrets to an untrusted network.

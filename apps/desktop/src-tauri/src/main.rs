@@ -283,11 +283,11 @@ async fn network_test(
     account: String,
     id: String,
 ) -> Result<String, String> {
-    let proxy = with_manager(state, |manager| {
+    let route = with_manager(state, |manager| {
         manager.require_account(&account)?;
-        manager.workspace_proxy(&account, &id)
+        manager.workspace_route(&account, &id)
     })?;
-    tauri::async_runtime::spawn_blocking(move || connections::test_route(proxy, None))
+    tauri::async_runtime::spawn_blocking(move || connections::test_route(route, None))
         .await.map_err(|e| e.to_string())?
 }
 
@@ -314,12 +314,12 @@ async fn test_connection(
     id: Option<String>,
     credentials: Option<connections::Credentials>,
 ) -> Result<String, String> {
-    let proxy = with_manager(state, |manager| {
+    let route = with_manager(state, |manager| {
         manager.require_account(&account)?;
         let selection = id.map_or(connections::Selection::Direct, |id| connections::Selection::Saved { id });
-        connections::resolve(manager.db()?, &account, &selection)
+        runtime::Route::resolve(manager.db()?, &account, &selection)
     })?;
-    tauri::async_runtime::spawn_blocking(move || connections::test_route(proxy, credentials))
+    tauri::async_runtime::spawn_blocking(move || connections::test_route(route, credentials))
         .await.map_err(|e| e.to_string())?
 }
 

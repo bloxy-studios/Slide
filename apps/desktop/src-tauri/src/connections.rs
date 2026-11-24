@@ -1,4 +1,5 @@
 use crate::manager::db_error;
+use crate::runtime::Route;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,30 @@ mod tests {
             Proxy::parse("http://127.0.0.1:4312").unwrap().launch_flag(),
             "--proxy-server=http://127.0.0.1:4312"
         );
+    }
+
+    #[test]
+    fn system_probe_reports_only_direct_reachability() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+            let mut request = BufReader::new(&mut socket);
+            let mut line = String::new();
+            request.read_line(&mut line).unwrap();
+            assert_eq!(line, "GET /route HTTP/1.1\r\n");
+            loop {
+                line.clear();
+                if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nX-Slide-Fixture-Route: direct\r\n\r\n").unwrap();
+        });
+        let result = test_route_at(Route::System, None, port).unwrap();
+        server.join().unwrap();
+        assert_eq!(result, "System route not verified (direct reachability only; manager probe).");
     }
 
     #[test]
@@ -229,12 +254,24 @@ pub struct Credentials {
 }
 
 pub fn test_route(
-    proxy: Option<Proxy>,
+    route: Route,
     credentials: Option<Credentials>,
 ) -> Result<String, String> {
+    test_route_at(route, credentials, FIXTURE_PORT)
+}
+
+fn test_route_at(
+    route: Route,
+    credentials: Option<Credentials>,
+    fixture_port: u16,
+) -> Result<String, String> {
+    let proxy = match &route {
+        Route::Proxy(proxy) => Some(proxy),
+        Route::Direct | Route::System => None,
+    };
     let mut auth = String::new();
     if let Some(credentials) = credentials {
-        let host = proxy.as_ref().and_then(|proxy| proxy.0.host());
+        let host = proxy.and_then(|proxy| proxy.0.host());
         if !matches!(host, Some(url::Host::Ipv4(ip)) if ip.is_loopback())
             && !matches!(host, Some(url::Host::Ipv6(ip)) if ip.is_loopback())
         {
@@ -254,11 +291,11 @@ pub fn test_route(
             STANDARD.encode(format!("{}:{}", credentials.username, credentials.password))
         );
     }
-    let host = format!("127.0.0.1:{FIXTURE_PORT}");
+    let host = format!("127.0.0.1:{fixture_port}");
     let (mut socket, target, expected) = match proxy {
         Some(proxy) => (proxy.open()?, format!("http://{host}/route"), "proxy"),
         None => (
-            TcpStream::connect_timeout(&([127, 0, 0, 1], FIXTURE_PORT).into(), TIMEOUT)
+            TcpStream::connect_timeout(&([127, 0, 0, 1], fixture_port).into(), TIMEOUT)
                 .map_err(|_| "The local route fixture is not reachable.")?,
             "/route".into(),
             "direct",
@@ -301,6 +338,9 @@ pub fn test_route(
         }
         if let Some((key, value)) = line.split_once(':') {
             if key.eq_ignore_ascii_case("X-Slide-Fixture-Route") && value.trim() == expected {
+                if matches!(route, Route::System) {
+                    return Ok("System route not verified (direct reachability only; manager probe).".into());
+                }
                 return Ok(format!(
                     "Fixture route confirmed: {expected} (manager probe; not a browser test)."
                 ));

@@ -596,11 +596,11 @@ impl Manager {
         Ok(())
     }
 
-    pub fn workspace_proxy(&self, account: &str, id: &str) -> Result<Option<crate::connections::Proxy>, String> {
+    pub fn workspace_route(&self, account: &str, id: &str) -> Result<crate::runtime::Route, String> {
         let workspace = self.rows(account, Some(id))?.pop()
             .filter(|workspace| workspace.trashed_at.is_none())
             .ok_or("Workspace no longer exists.")?;
-        crate::connections::resolve(self.db()?, account, &workspace.settings.connection)
+        crate::runtime::Route::resolve(self.db()?, account, &workspace.settings.connection)
     }
 
     pub fn trash_workspace(
