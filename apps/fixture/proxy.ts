@@ -1,9 +1,10 @@
 import { createServer, request } from "node:http";
-import { qaPort, secondaryPort } from "./server";
+export const qaPort = 4320;
 
-export function fixtureProxy(port = 4312, targetPort = qaPort, authenticate = false, secondPort = secondaryPort) {
+export function fixtureProxy(port = 4312, targetPort = qaPort, authenticate = false, secondPort?: number) {
   const expected = "Basic " + Buffer.from("fixture:fixture").toString("base64");
-  const destinations = new Map([targetPort, secondPort].map(port => [`http://127.0.0.1:${port}`, port]));
+  const destinations = new Map([[`http://127.0.0.1:${targetPort}`, targetPort]]);
+  if (secondPort !== undefined) destinations.set(`http://127.0.0.1:${secondPort}`, secondPort);
   return createServer((incoming, reply) => {
     let target: URL;
     try {

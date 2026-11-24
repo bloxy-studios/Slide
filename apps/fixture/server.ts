@@ -1,9 +1,9 @@
 import { cookieFormat, exportFixtureCookie, importFixtureCookie, qaControls } from "./qa";
+import { fixtureProxy, qaPort } from "./proxy";
 
 const primary = "http://127.0.0.1:4310";
-export const secondaryPort = 4311;
+const secondaryPort = 4311;
 const secondary = `http://127.0.0.1:${secondaryPort}`;
-export const qaPort = 4320;
 const roles = { creator: "Creator", viewer: "Viewer" } as const;
 type Role = keyof typeof roles;
 
@@ -119,11 +119,15 @@ export function fixture(port = 4310, isolated = false, secondOrigin: string | nu
 
 if (import.meta.main) {
   const qaOnly = process.argv.includes("--qa-only");
-  if (!qaOnly) {
+  const second = qaOnly ? undefined : fixture(secondaryPort, true);
+  if (second) {
     fixture();
-    fixture(secondaryPort, true);
     console.log(`Synthetic fixture: ${primary} (second origin: ${secondary})`);
   }
-  fixture(qaPort, false, qaOnly ? null : secondary);
+  const lab = fixture(qaPort, false, second?.url.origin ?? null);
   console.log(`Synthetic route fixture: http://127.0.0.1:${qaPort}/qa`);
+  if (process.argv.includes("--proxy")) {
+    fixtureProxy(4312, lab.port, process.argv.includes("--auth"), second?.port);
+    console.log("Loopback-only fixture HTTP proxy on 127.0.0.1:4312");
+  }
 }
