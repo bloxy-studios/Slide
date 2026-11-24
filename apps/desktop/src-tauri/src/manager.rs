@@ -1081,6 +1081,13 @@ impl Manager {
                         }
                     }
                 }
+                let startup_urls;
+                let urls = if !automation && !active && url.is_none() {
+                    startup_urls = crate::startup::prepend_check(urls);
+                    startup_urls.as_slice()
+                } else {
+                    urls
+                };
                 let seeded = should_seed && seed_profile(&directory, &workspace.name)?;
                 let child = Chromium::launch(&runtime.path, &directory, urls, reopen, &extensions, route, debugging).map_err(|error| {
                     if seeded {

@@ -8,6 +8,7 @@ mod crx;
 mod importer;
 mod manager;
 mod runtime;
+mod startup;
 mod sync;
 
 use catalog::{Bookmark, ItemKind, Label, Settings, Tag, TaskDraft, Template, View};
@@ -327,11 +328,17 @@ async fn test_connection(
     state: State<'_, AppState>,
     account: String,
     id: Option<String>,
+    endpoint: Option<String>,
     credentials: Option<connections::Credentials>,
 ) -> Result<String, String> {
     let route = with_manager(state, |manager| {
         manager.require_account(&account)?;
-        let selection = id.map_or(connections::Selection::Direct, |id| connections::Selection::Saved { id });
+        let selection = match (id, endpoint) {
+            (Some(id), None) => connections::Selection::Saved { id },
+            (None, Some(endpoint)) => connections::Selection::Workspace { endpoint },
+            (None, None) => connections::Selection::Direct,
+            (Some(_), Some(_)) => return Err("Choose either a saved or an unsaved proxy.".into()),
+        };
         runtime::Route::resolve(manager.db()?, &account, &selection)
     })?;
     tauri::async_runtime::spawn_blocking(move || connections::test_route(route, credentials))

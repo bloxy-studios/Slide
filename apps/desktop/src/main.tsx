@@ -28,6 +28,9 @@ type Modal =
   | { type: "confirm"; title: string; detail: string; confirm: () => void };
 
 const tabs: Tab[] = ["Workspaces", "Library", "Shared", "Connections", "Reminders", "Import", "Extensions", "Automation", "Diagnostics", "Trash"];
+const tabLabel: Partial<Record<Tab, string>> = { Workspaces: "Profiles", Connections: "Proxy", Import: "Bulk import" };
+const tabIcon: Record<Tab, string> = { Workspaces: "▣", Library: "▤", Shared: "◇", Connections: "⇄", Reminders: "◷",
+  Import: "⇥", Extensions: "⊞", Automation: "⌘", Diagnostics: "◎", Trash: "⊘" };
 const batchLabels: Record<BatchAction, string> = {
   open: "Open", close: "Close", tag: "Add tag", folder: "Move to folder",
   network: "Test fixture route", trash: "Move to trash", restore: "Restore", purge: "Permanently delete",
@@ -294,9 +297,19 @@ function App() {
     }
   }
 
-  return <main>
+  return <main className="app-shell">
+    <aside className="sidebar">
+      <div className="wordmark"><span className="brand-mark" aria-hidden="true">S</span>Slide</div>
+      <nav className="sidebar-nav" aria-label="Catalog sections">
+        {tabs.map(label => <button key={label} aria-current={tab === label ? "page" : undefined} onClick={() => navigate(label)}>
+          <span aria-hidden="true">{tabIcon[label]}</span>{tabLabel[label] ?? label}{label === "Reminders" && due ? ` (${due} due)` : ""}
+        </button>)}
+      </nav>
+      <div className="sidebar-caption">Slide Workspaces<br /><small>Local desktop manager</small></div>
+    </aside>
+    <div className="content-pane">
     <header className="masthead">
-      <div><div className="eyebrow">SLIDE / DESKTOP</div><h1>Workspaces</h1><p>Separate browser sessions, on this device.</p></div>
+      <div><span className="eyebrow">WORKSPACE MANAGER</span><h1>{tabLabel[tab] ?? tab}</h1></div>
       {catalog && <div className="account-control">
         <label>Local account<select value={account} disabled={disabled} onChange={e => command("switch_account", { id: e.target.value }, "Local account switched.")}>
           {catalog.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -304,7 +317,7 @@ function App() {
         <button disabled={disabled} onClick={() => show({ type: "account" })}>Add account</button>
       </div>}
     </header>
-    <section className="panel runtime" aria-labelledby="runtime-title">
+    <section className="panel runtime" aria-labelledby="runtime-title" hidden={!!data?.runtime && tab !== "Diagnostics"}>
       <div>
         <div className="eyebrow" id="runtime-title">BROWSER RUNTIME</div>
         {data?.runtime ? <>
@@ -336,17 +349,12 @@ function App() {
     {jobRunning && <div className="actions job-control"><a href="#batch-result">View {jobTitle.toLowerCase()} progress</a>
       <button onClick={() => { stopJob.current = true; }}>Cancel remaining</button></div>}
     {catalog && currentView && <>
-      <nav className="tabs" aria-label="Catalog sections">
-        {tabs.map(label => <button key={label} aria-current={tab === label ? "page" : undefined} onClick={() => navigate(label)}>
-          {label}{label === "Reminders" && due ? ` (${due} due)` : ""}
-        </button>)}
-      </nav>
       {(tab === "Workspaces" || trash) && <section aria-labelledby="workspace-title">
-        <div className="section-heading"><h2 id="workspace-title">{trash ? "Local trash" : "Your workspaces"}</h2>
+        <div className="section-heading"><h2 id="workspace-title">{trash ? "Local trash" : "Browser profiles"}</h2>
           {!trash && <div className="actions">
-            <button disabled={disabled} onClick={() => show({ type: "workspace", mode: "quick" })}>Quick workspace</button>
+            <button disabled={disabled} onClick={() => navigate("Import")}>Bulk import</button>
             <button disabled={disabled || !catalog.templates.length} onClick={() => show({ type: "workspace", mode: "template" })}>From template</button>
-            <button className="primary" disabled={disabled} onClick={() => show({ type: "workspace", mode: "manual" })}>New workspace</button>
+            <button className="primary" disabled={disabled} onClick={() => show({ type: "workspace", mode: "quick" })}>+ New profile</button>
           </div>}
         </div>
         {!trash && <div className="panel filters">
@@ -382,7 +390,7 @@ function App() {
           <button disabled={disabled || !selectedRows.length || (batchAction === "tag" && !batchValue)} onClick={() => beginWorkspaceBatch(selectedRows, batchAction)}>Run selected</button>
         </div>
         {pageRows.length ? <div className="table-wrap panel"><table>
-          <thead><tr><th scope="col">Select</th><th scope="col">Workspace</th>{columns.map(column => <th scope="col" key={column}>{columnLabels[column]}</th>)}<th scope="col">Actions</th></tr></thead>
+          <thead><tr><th scope="col">Select</th><th scope="col">Profile</th>{columns.map(column => <th scope="col" key={column}>{columnLabels[column]}</th>)}<th scope="col">Actions</th></tr></thead>
           <tbody>{pageRows.map(row => {
             const pending = disabled || row.status === "starting" || row.status === "closing";
             const running = row.status === "running" || row.status === "background";
@@ -397,7 +405,7 @@ function App() {
                 {trash ? <div className="actions"><button disabled={disabled} onClick={() => beginWorkspaceBatch([row], "restore")}>Restore</button>
                   <button disabled={disabled} onClick={() => beginWorkspaceBatch([row], "purge")}>Permanently delete</button></div> :
                   <><div className="actions" aria-label={`Actions for ${row.name}`}>
-                    <button className="primary" disabled={pending || row.status === "locked"} onClick={() => action(row, "open")}>Open</button>
+                    <button className="start-button" disabled={pending || row.status === "locked"} onClick={() => action(row, "open")}><span aria-hidden="true">▸ </span>Start</button>
                     <button disabled={pending || row.status !== "running"} onClick={() => action(row, "focus")}>Focus</button>
                     <button disabled={pending || !row.canClose} onClick={() => action(row, "close")}>Close</button>
                   </div>
@@ -500,9 +508,10 @@ function App() {
       <ol>{outcomes.map(row => <li key={row.key}>{row.name} — <strong>{row.state}</strong>{row.detail && `: ${row.detail}`}</li>)}</ol>
     </section>}
     <footer>Unsigned development build · Browser data stays local</footer>
-    <dialog ref={dialog} onClose={() => setModal(undefined)} onCancel={e => { if (busy) e.preventDefault(); }}>
+    <dialog className={modal?.type === "workspace" ? "profile-dialog" : undefined} ref={dialog} onClose={() => setModal(undefined)} onCancel={e => { if (busy) e.preventDefault(); }}>
       {modal && catalog && <>
-        {modal.type === "workspace" && <WorkspaceForm key={`${modal.mode}-${modal.workspace?.id}`} mode={modal.mode} workspace={modal.workspace} catalog={catalog} run={command} busy={busy} cancel={dismiss} />}
+        {modal.type === "workspace" && <WorkspaceForm key={`${modal.mode}-${modal.workspace?.id}`} mode={modal.mode} workspace={modal.workspace} catalog={catalog} run={command} busy={busy} cancel={dismiss}
+          bulk={() => { dismiss(); navigate("Import"); }} browser={data?.runtime?.brand} />}
         {modal.type === "library" && <LibraryForm kind={modal.kind} item={modal.item} catalog={catalog} run={command} busy={busy} cancel={dismiss} />}
         {modal.type === "task" && <TaskForm workspaces={active} selected={selection.filter(id => active.some(w => w.id === id))} run={command} busy={busy} cancel={dismiss} />}
         {modal.type === "extension" && <ExtensionForm extension={modal.extension} run={command} busy={busy} cancel={dismiss} />}
@@ -544,6 +553,7 @@ function App() {
         <p className="error" role="alert">{error}</p>
       </>}
     </dialog>
+    </div>
   </main>;
 }
 

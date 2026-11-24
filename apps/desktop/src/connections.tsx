@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { SavedConnection, Workspace } from "./catalog";
 import type { Run } from "./forms";
 
@@ -9,6 +9,9 @@ export function Connections({ account, entries, workspaces, run, disabled }: {
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [csv, setCsv] = useState("");
+  const [query, setQuery] = useState("");
+  const [draftStatus, setDraftStatus] = useState("");
+  const dialog = useRef<HTMLDialogElement>(null);
   const [target, setTarget] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -31,16 +34,50 @@ export function Connections({ account, entries, workspaces, run, disabled }: {
   function result(id: string) {
     return results[id] ? <>{results[id].label} <small>· {results[id].time}</small></> : "Not checked in this panel.";
   }
+  async function detect() {
+    setPending(true); setDraftStatus("");
+    try {
+      setDraftStatus(await invoke<string>("test_connection", { account, endpoint, id: null, credentials: null }));
+    } catch (error) {
+      setDraftStatus(String(error));
+    } finally { setPending(false); }
+  }
   return <section>
-    <h2>Connections</h2>
-    <p>Assign a saved HTTP proxy or a workspace-only endpoint when editing a workspace. Required browser routes have no Direct fallback. Proxy launch is available with the bundled runtime on macOS arm64; this is not a VPN or an operating-system network guarantee.</p>
-    <form className="form-grid" onSubmit={event => {
-      event.preventDefault(); run("save_connection", { name, endpoint }, "HTTP proxy saved.");
-    }}>
-      <label>Display name<input required maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
-      <label>HTTP proxy endpoint<input required value={endpoint} onChange={event => setEndpoint(event.target.value)} placeholder="http://127.0.0.1:4312" /></label>
-      <button disabled={disabled}>Save HTTP proxy</button>
-    </form>
+    <div className="section-heading"><h2>Saved proxies</h2><div className="actions">
+      <input type="search" aria-label="Search proxies" placeholder="Name or address" value={query} onChange={e => setQuery(e.target.value)} />
+      <button className="primary" disabled={disabled} onClick={() => { setName(""); setEndpoint(""); setDraftStatus(""); dialog.current?.showModal(); }}>+ Add proxy</button>
+    </div></div>
+    <p>Assign saved proxies when editing a profile. Required proxy launch has no Direct fallback and is available only with bundled Chromium on macOS arm64.</p>
+    <dialog ref={dialog} onCancel={e => { if (pending) e.preventDefault(); }}>
+      <form onSubmit={event => {
+        event.preventDefault(); run("save_connection", { name, endpoint }, "HTTP proxy saved."); dialog.current?.close();
+      }}>
+        <h2>Add proxy</h2>
+        <label>Proxy type<input value="HTTP" readOnly /></label>
+        <label>IP query channel<select defaultValue="DB-IP">
+          <option disabled>IP2Location (not configured)</option><option disabled>MaxMind (not configured)</option>
+          <option>DB-IP</option><option disabled>IP-API (HTTPS plan not configured)</option>
+        </select></label>
+        <p>DB-IP receives the browser’s public IP at startup. Proxy detection below checks the local QA fixture, not geolocation.</p>
+        <label>Display name<input required maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
+        <label>HTTP proxy endpoint<input required value={endpoint} onChange={event => { setEndpoint(event.target.value); setDraftStatus(""); }} placeholder="http://127.0.0.1:4312" /></label>
+        <p>Slide does not store proxy credentials. Chromium prompts for them when required.</p>
+        <p role="status">{draftStatus}</p>
+        <div className="actions">
+          <button type="button" disabled={pending} onClick={() => dialog.current?.close()}>Cancel</button>
+          <button type="button" disabled={!endpoint || pending || disabled} onClick={() => void detect()}>{pending ? "Checking…" : "Proxy detection"}</button>
+          <button className="primary" disabled={disabled || pending}>Confirm</button>
+        </div>
+      </form>
+    </dialog>
+    <div className="table-wrap panel"><table>
+      <thead><tr><th scope="col">Proxy name</th><th scope="col">Server</th><th scope="col">IP query channel</th><th scope="col">Profiles</th><th scope="col">Fixture detection</th></tr></thead>
+      <tbody>{entries.filter(entry => `${entry.name} ${entry.endpoint}`.toLowerCase().includes(query.trim().toLowerCase())).map(entry => <tr key={entry.id}>
+        <th scope="row">{entry.name}</th><td>{entry.endpoint}</td><td>DB-IP</td>
+        <td>{workspaces.filter(row => row.settings.connection.mode === "saved" && row.settings.connection.id === entry.id).map(row => row.name).join(", ") || "—"}</td>
+        <td>{result(entry.id)}</td>
+      </tr>)}</tbody>
+    </table></div>
     <details><summary>Bulk import proxy endpoints (CSV)</summary>
       <form onSubmit={event => { event.preventDefault(); run("import_connections", { csv }, "HTTP proxy endpoints imported."); }}>
         <label>Paste CSV with name,endpoint header. Do not include credentials.
@@ -48,14 +85,7 @@ export function Connections({ account, entries, workspaces, run, disabled }: {
         <button disabled={disabled}>Import endpoints</button>
       </form>
     </details>
-    <article><h3>Direct · no proxy</h3><p>{result("direct")}</p></article>
-    {entries.map(entry => <article key={entry.id}>
-      <h3>{entry.name} · HTTP proxy</h3>
-      <p>{entry.endpoint} · Credentials not stored</p>
-      <p>Workspaces: {workspaces.filter(row => row.settings.connection.mode === "saved" && row.settings.connection.id === entry.id).map(row => row.name).join(", ") || "None"}</p>
-      <p>{result(entry.id)}</p>
-    </article>)}
-    <form onSubmit={event => { event.preventDefault(); void probe(); }}>
+    <form className="panel fixture-probe" onSubmit={event => { event.preventDefault(); void probe(); }}>
       <h3>Test controlled fixture route</h3>
       <p>These checks target the loopback fixture at 127.0.0.1:4320 from the manager, not from the browser. Use only synthetic credentials; browser authentication happens in Chromium.</p>
       <label>Test connection<select value={target} onChange={event => { setTarget(event.target.value); setUsername(""); setPassword(""); }}>
