@@ -13,6 +13,7 @@ services:
       retries: 20
   minio:
     image: cgr.dev/chainguard/minio@sha256:9f0aab4471ebb181be3cfabea21b719303ec583cd9abdb7779f9e53032b844f7
+    user: "0:0"
     command: server /data
     environment:
       MINIO_ROOT_USER: slide-local
