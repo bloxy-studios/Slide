@@ -24,6 +24,22 @@ pub struct RuntimeInfo {
     pub bundled: bool,
 }
 
+impl RuntimeInfo {
+    pub fn is_at_least(&self, minimum: &str) -> bool {
+        fn parts(version: &str) -> Option<[u32; 4]> {
+            let mut chunks = version.split('.');
+            let mut numbers = [0; 4];
+            for number in &mut numbers {
+                *number = chunks.next()?.parse().ok()?;
+            }
+            chunks.next().is_none().then_some(numbers)
+        }
+        parts(&self.version)
+            .zip(parts(minimum))
+            .is_some_and(|(current, minimum)| current >= minimum)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
     pub pid: u32,
@@ -58,16 +74,16 @@ impl Chromium {
     }
 
     pub fn discover() -> Result<RuntimeInfo, String> {
-        native::candidates().into_iter().find_map(|path| Self::inspect(&path).ok()).ok_or_else(|| {
+        Self::discover_matching(|_| true).ok_or_else(|| {
             "No compatible Google Chrome or Chromium installation was found. Install one and choose its application or executable below.".into()
         })
     }
 
-    pub fn discover_brand(brand: &str) -> Option<RuntimeInfo> {
+    pub fn discover_matching(compatible: impl FnMut(&RuntimeInfo) -> bool) -> Option<RuntimeInfo> {
         native::candidates()
             .into_iter()
             .filter_map(|path| Self::inspect(&path).ok())
-            .find(|runtime| runtime.brand == brand)
+            .find(compatible)
     }
 
     pub fn bundled_path(resources: &Path) -> PathBuf {

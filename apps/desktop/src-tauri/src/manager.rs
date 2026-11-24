@@ -62,7 +62,33 @@ struct Workspace {
     #[serde(skip)]
     identity: Option<Identity>,
     #[serde(skip)]
-    browser: Option<(String, PathBuf)>,
+    browser: Option<ProfileBrowser>,
+}
+
+struct ProfileBrowser {
+    brand: String,
+    path: PathBuf,
+    version: Option<String>,
+}
+
+impl ProfileBrowser {
+    fn accepts(&self, runtime: &RuntimeInfo) -> bool {
+        self.brand == runtime.brand
+            && self.version.as_deref().is_some_and(|version| runtime.is_at_least(version))
+    }
+
+    fn unavailable(&self) -> String {
+        match &self.version {
+            Some(version) => format!(
+                "This workspace last used {} {}. Install or select that version or newer; Slide will not open it in an older browser or a different brand.",
+                self.brand, version,
+            ),
+            None => format!(
+                "This workspace last used {}, but its version was not recorded. Slide will not risk its saved sessions. Clone its settings into a new workspace or restore a backup with its original Slide and browser.",
+                self.brand,
+            ),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -128,6 +154,7 @@ impl Manager {
             include_str!("../migrations/001_workspaces.sql"),
             include_str!("../migrations/002_catalog.sql"),
             include_str!("../migrations/003_profile_browser.sql"),
+            include_str!("../migrations/004_profile_browser_version.sql"),
         ];
         if version as usize > migrations.len() {
             return Err(
@@ -302,11 +329,12 @@ impl Manager {
 
     fn rows(&self, account: &str, id: Option<&str>) -> Result<Vec<Workspace>, String> {
         let mut statement = self.db()?.prepare(
-            "SELECT id,name,start_url,pid,started,exit_note,settings,created_at,trashed_at,browser_brand,browser_path FROM workspaces
+            "SELECT id,name,start_url,pid,started,exit_note,settings,created_at,trashed_at,browser_brand,browser_path,browser_version FROM workspaces
              WHERE account_id=?1 AND (?2 IS NULL OR id=?2) ORDER BY rowid",
         ).map_err(db_error)?;
         let rows = statement
             .query_map(params![account, id], |row| {
+                let version = row.get(11)?;
                 Ok((
                     Workspace {
                         id: row.get(0)?,
@@ -325,7 +353,11 @@ impl Manager {
                         browser: row
                             .get::<_, Option<String>>(9)?
                             .zip(row.get::<_, Option<String>>(10)?)
-                            .map(|(brand, path)| (brand, PathBuf::from(path))),
+                            .map(|(brand, path)| ProfileBrowser {
+                                brand,
+                                path: PathBuf::from(path),
+                                version,
+                            }),
                     },
                     row.get::<_, String>(6)?,
                 ))
@@ -520,10 +552,21 @@ impl Manager {
         let observation = self.chromium.observe(&directory);
         let (status, identity) = match &observation {
             Observation::Session(session) => {
-                if workspace.browser.is_none() {
+                if workspace.browser.as_ref().is_none_or(|browser| browser.version.is_none())
+                    || old_identity != Some(session.identity)
+                {
                     if let Ok(runtime) = Chromium::inspect(&session.executable) {
-                        self.record_browser(&workspace.id, &runtime)?;
-                        workspace.browser = Some((runtime.brand, runtime.path));
+                        if workspace.browser.as_ref().is_none_or(|browser| {
+                            browser.brand == runtime.brand
+                                && (browser.version.is_none() || browser.accepts(&runtime))
+                        }) {
+                            self.record_browser(&workspace.id, &runtime)?;
+                            workspace.browser = Some(ProfileBrowser {
+                                brand: runtime.brand,
+                                path: runtime.path,
+                                version: Some(runtime.version),
+                            });
+                        }
                     }
                 }
                 let (status, ended) = session_status(session, transition);
@@ -612,8 +655,8 @@ impl Manager {
 
     fn record_browser(&self, id: &str, runtime: &RuntimeInfo) -> Result<(), String> {
         self.db()?.execute(
-            "UPDATE workspaces SET browser_brand=?1, browser_path=?2 WHERE id=?3",
-            params![runtime.brand, runtime.path.to_str().ok_or("The browser path is not valid Unicode.")?, id],
+            "UPDATE workspaces SET browser_brand=?1, browser_path=?2, browser_version=?3 WHERE id=?4",
+            params![runtime.brand, runtime.path.to_str().ok_or("The browser path is not valid Unicode.")?, runtime.version, id],
         ).map_err(db_error)?;
         Ok(())
     }
@@ -626,19 +669,22 @@ impl Manager {
                 Chromium::inspect(&cached.path)
             }
         });
-        if let Some((brand, path)) = &workspace.browser {
-            return Chromium::inspect(path)
+        if let Some(browser) = &workspace.browser {
+            if browser.version.is_none() {
+                return Err(browser.unavailable());
+            }
+            return Chromium::inspect(&browser.path)
                 .ok()
-                .filter(|runtime| &runtime.brand == brand)
+                .filter(|runtime| browser.accepts(runtime))
                 .map(|runtime| match &selected {
                     Ok(selected) if selected.path == runtime.path => selected.clone(),
                     _ => runtime,
                 })
-                .or_else(|| selected.ok().filter(|runtime| &runtime.brand == brand))
+                .or_else(|| selected.ok().filter(|runtime| browser.accepts(runtime)))
                 .or_else(|| self.bundled_path.as_deref().and_then(|path| Chromium::inspect_bundled(path).ok())
-                    .filter(|runtime| &runtime.brand == brand))
-                .or_else(|| Chromium::discover_brand(brand))
-                .ok_or_else(|| format!("This workspace last used {brand}. Install a compatible {brand} or select it in the manager to reopen without risking its saved sessions."));
+                    .filter(|runtime| browser.accepts(runtime)))
+                .or_else(|| Chromium::discover_matching(|runtime| browser.accepts(runtime)))
+                .ok_or_else(|| browser.unavailable());
         }
         if !profile_directory_is_empty(directory)? {
             return Err("This existing profile predates browser tracking. Slide cannot verify its browser and will not risk its saved sessions. Keep the original profile and clone its settings into a new workspace, or restore a pre-upgrade backup with the original Slide and browser.".into());
@@ -714,6 +760,12 @@ impl Manager {
                         return Err("The browser changed. Retry opening the workspace.".into());
                     };
                     self.chromium.verified(&directory, session.identity)?;
+                    if let Some(browser) = &workspace.browser {
+                        let runtime = Chromium::inspect(&session.executable)?;
+                        if !browser.accepts(&runtime) {
+                            return Err(browser.unavailable());
+                        }
+                    }
                     session.executable
                 } else {
                     let runtime = self.profile_runtime(&workspace, &directory)?;
@@ -906,31 +958,32 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn mac_browser(root: &Path, brand: &str, identifier: &str, version: &str) -> PathBuf {
+        let app = root.join(format!("{brand}.app"));
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        let plist = plist::Dictionary::from_iter([
+            ("CFBundleIdentifier", plist::Value::String(identifier.into())),
+            ("CFBundleExecutable", plist::Value::String(brand.into())),
+            ("CFBundleShortVersionString", plist::Value::String(version.into())),
+        ]);
+        plist::Value::Dictionary(plist)
+            .to_file_xml(app.join("Contents/Info.plist"))
+            .unwrap();
+        let arch: u32 = if cfg!(target_arch = "aarch64") { 0x0100000c } else { 0x01000007 };
+        fs::write(
+            app.join("Contents/MacOS").join(brand),
+            [0xfeedfacfu32.to_be_bytes(), arch.to_be_bytes()].concat(),
+        )
+        .unwrap();
+        app
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn persisted_chrome_profile_keeps_chrome_when_bundled_is_selected() {
-        fn browser(root: &Path, brand: &str, identifier: &str) -> PathBuf {
-            let app = root.join(format!("{brand}.app"));
-            fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
-            let plist = plist::Dictionary::from_iter([
-                ("CFBundleIdentifier", plist::Value::String(identifier.into())),
-                ("CFBundleExecutable", plist::Value::String(brand.into())),
-                ("CFBundleShortVersionString", plist::Value::String("1.0".into())),
-            ]);
-            plist::Value::Dictionary(plist)
-                .to_file_xml(app.join("Contents/Info.plist"))
-                .unwrap();
-            let arch: u32 = if cfg!(target_arch = "aarch64") { 0x0100000c } else { 0x01000007 };
-            fs::write(
-                app.join("Contents/MacOS").join(brand),
-                [0xfeedfacfu32.to_be_bytes(), arch.to_be_bytes()].concat(),
-            )
-            .unwrap();
-            app
-        }
-
         let test = tempfile::tempdir().unwrap();
-        let bundled = browser(test.path(), "Chromium", "org.chromium.Chromium");
-        let chrome = browser(test.path(), "Google Chrome", "com.google.Chrome");
+        let bundled = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", "160.0.8182.0");
+        let chrome = mac_browser(test.path(), "Google Chrome", "com.google.Chrome", "154.0.8037.93");
         let manager = Manager::with_bundle(test.path().into(), Some(bundled.clone())).unwrap();
         let id = insert_workspace(manager.db().unwrap(), "local", "Creator", Settings::default())
             .unwrap();
@@ -948,6 +1001,35 @@ mod tests {
         let workspace = manager.rows("local", Some(&clone)).unwrap().pop().unwrap();
         let directory = prepare_directory(test.path(), &manager.directory(&clone).unwrap()).unwrap();
         assert!(manager.profile_runtime(&workspace, &directory).unwrap().bundled);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn missing_browser_only_falls_back_to_same_or_newer_profile_version() {
+        let test = tempfile::tempdir().unwrap();
+        let manager = Manager::new(test.path().into()).unwrap();
+        let id = insert_workspace(manager.db().unwrap(), "local", "Creator", Settings::default())
+            .unwrap();
+        let directory = prepare_directory(test.path(), &manager.directory(&id).unwrap()).unwrap();
+        let version = "4000000000.0.10.0";
+        let previous = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", version);
+        manager.record_browser(&id, &Chromium::inspect(&previous).unwrap()).unwrap();
+        fs::rename(&previous, test.path().join("Removed.app")).unwrap();
+        drop(manager);
+
+        let bundle_root = test.path().join("bundle");
+        let bundled = mac_browser(&bundle_root, "Chromium", "org.chromium.Chromium", "4000000000.0.9.0");
+        let manager = Manager::with_bundle(test.path().into(), Some(bundled)).unwrap();
+        let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
+        let error = manager.profile_runtime(&workspace, &directory).unwrap_err();
+        assert!(error.contains(version));
+
+        for available in [version, "4000000000.0.11.0"] {
+            mac_browser(&bundle_root, "Chromium", "org.chromium.Chromium", available);
+            let runtime = manager.profile_runtime(&workspace, &directory).unwrap();
+            assert_eq!(runtime.version, available);
+            assert!(runtime.bundled);
+        }
     }
 
     #[test]
