@@ -41,7 +41,7 @@ impl Route {
         })
     }
 
-    fn apply(self, command: &mut Command) {
+    fn apply(&self, command: &mut Command) {
         match self {
             Self::System => {}
             Self::Direct => { command.arg("--no-proxy-server"); }
@@ -196,7 +196,7 @@ impl Chromium {
         urls: &[String],
         reopen: bool,
         extensions: &[PathBuf],
-        route: Route,
+        route: &Route,
         debugging: bool,
     ) -> Result<Child, String> {
         let mut profile = OsString::from("--user-data-dir=");
