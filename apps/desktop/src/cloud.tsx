@@ -10,6 +10,7 @@ type Team = { id: string; name: string; role: TeamRole };
 type LeaseState = { lease: Lease | null; heldByThisDevice?: boolean; generation: number };
 type Sealed = { envelope: Envelope; sha256: string };
 type Upload = Sealed & { path: string; requestId: string; fence: string; generation: number };
+type Confirmation = { title: string; detail: string; submit: () => Promise<void> };
 const endpoint = "http://127.0.0.1:4321" + SYNC_API;
 
 function identifier() {
@@ -68,11 +69,17 @@ export function Cloud({ account, workspaces, refresh }: {
   const [ticket, setTicket] = useState("");
   const [issuedTicket, setIssuedTicket] = useState("");
   const [pendingUpload, setPendingUpload] = useState<Upload>();
+  const [confirmation, setConfirmation] = useState<Confirmation>();
+  const confirmationDialog = useRef<HTMLDialogElement>(null);
   const lock = useRef(false);
   const workspace = remote.find(row => row.id === workspaceId);
   const selectedTeam = teams.find(team => team.id === teamId);
   const path = "/workspaces/" + workspaceId;
   const token = session?.token;
+
+  useEffect(() => {
+    if (confirmation && !confirmationDialog.current?.open) confirmationDialog.current?.showModal();
+  }, [confirmation]);
 
   async function run(action: () => Promise<void>) {
     if (lock.current) return;
@@ -243,9 +250,11 @@ export function Cloud({ account, workspaces, refresh }: {
         <div className="actions">
           <button disabled={busy || workspace.role === "reader" || !!fence} onClick={() => void run(() => leaseAction("acquire"))}>Acquire lease</button>
           <button disabled={busy || !fence} onClick={() => void run(() => leaseAction("release"))}>Release lease</button>
-          {workspace.role === "owner" && <button disabled={busy || !lease?.lease || !!fence} onClick={() => {
-            if (window.confirm("Take over the server lease? The previous device may still have a local copy open, but cannot publish with its old lease.")) void run(() => leaseAction("takeover"));
-          }}>Take over lease</button>}
+          {workspace.role === "owner" && <button disabled={busy || !lease?.lease || !!fence} onClick={() => setConfirmation({
+            title: "Take over lease",
+            detail: `Take over the lease for ${workspace.name}? The previous device may still have a local copy open, but cannot publish with its old lease.`,
+            submit: () => leaseAction("takeover"),
+          })}>Take over lease</button>}
         </div>
         {workspace.role === "owner" && <>
           <label>Team member<select value={memberId} disabled={teamId !== workspace.teamId} onChange={e => setMemberId(e.target.value)}>
@@ -257,12 +266,14 @@ export function Cloud({ account, workspaces, refresh }: {
               await api(path + "/grants/" + memberId, token, role === "revoke" ? "DELETE" : "PUT", role === "revoke" ? undefined : { role });
               setNotice(role === "revoke" ? "Workspace access revoked." : `Granted ${role} access.`);
             })}>{role === "revoke" ? "Revoke access" : `Grant ${role}`}</button>)}
-            <button disabled={busy || !memberId || !!lease?.lease || teamId !== workspace.teamId} onClick={() => {
-              if (window.confirm("Transfer this workspace? You will lose access.")) void run(async () => {
+            <button disabled={busy || !memberId || !!lease?.lease || teamId !== workspace.teamId} onClick={() => setConfirmation({
+              title: "Transfer ownership",
+              detail: `Transfer ${workspace.name} to ${members.find(member => member.id === memberId)?.email}? You will lose access.`,
+              submit: async () => {
                 await api(path + "/transfer", token, "POST", { accountId: memberId });
                 await lists(session.token); setNotice("Ownership transferred.");
-              });
-            }}>Transfer ownership</button>
+              },
+            })}>Transfer ownership</button>
             <button disabled={busy || !memberId || !!lease?.lease || !version || teamId !== workspace.teamId} onClick={() => void run(async () => {
               const result = await api<{ ticket: string }>(path + "/exchange", token, "POST", { accountId: memberId, version: Number(version) });
               setIssuedTicket(result.ticket);
@@ -301,5 +312,18 @@ export function Cloud({ account, workspaces, refresh }: {
         await lists(session.token); setTicket(""); setWorkspaceId(created.id);
       })}>Redeem into team</button>
     </>}
+    <dialog ref={confirmationDialog} aria-labelledby="shared-confirmation-title" onClose={() => setConfirmation(undefined)}>
+      {confirmation && <>
+        <h2 id="shared-confirmation-title">{confirmation.title}?</h2>
+        <p>{confirmation.detail}</p>
+        <div className="actions">
+          <button autoFocus onClick={() => confirmationDialog.current?.close()}>Cancel</button>
+          <button className="primary" disabled={busy} onClick={() => {
+            confirmationDialog.current?.close();
+            void run(confirmation.submit);
+          }}>{confirmation.title}</button>
+        </div>
+      </>}
+    </dialog>
   </section>;
 }
