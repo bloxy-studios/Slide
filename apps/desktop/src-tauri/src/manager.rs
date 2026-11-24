@@ -603,6 +603,47 @@ impl Manager {
         crate::runtime::Route::resolve(self.db()?, account, &workspace.settings.connection)
     }
 
+    pub fn export_sync_metadata(&mut self, account: &str, id: &str) -> Result<crate::sync::Metadata, String> {
+        self.require_account(account)?;
+        let mut row = self.rows(account, Some(id))?.pop().filter(|row| row.trashed_at.is_none())
+            .ok_or("Workspace no longer exists.")?;
+        self.chromium.refresh();
+        self.reconcile(&mut row)?;
+        if !matches!(row.status, Status::Closed | Status::Crashed) {
+            return Err("Close the workspace before snapshotting its metadata.".into());
+        }
+        let bookmarks = row.settings.bookmark_ids.iter()
+            .map(|id| catalog::item(self.db()?, account, ItemKind::Bookmark, id))
+            .collect::<Result<_, _>>()?;
+        Ok(crate::sync::Metadata {
+            version: 1, name: row.name, icon: row.settings.icon, notes: row.settings.notes,
+            launch_urls: row.settings.launch_urls, bookmarks,
+            runtime: row.browser.and_then(|browser| browser.version.map(|version| crate::sync::RuntimeVersion {
+                brand: browser.brand, version,
+            })),
+        })
+    }
+
+    pub fn import_sync_metadata(&mut self, account: &str, metadata: crate::sync::Metadata) -> Result<String, String> {
+        self.require_account(account)?;
+        if metadata.bookmarks.len() > 100 { return Err("Too many snapshot bookmarks.".into()); }
+        let tx = self.db_mut()?.transaction().map_err(db_error)?;
+        let mut bookmark_ids = Vec::with_capacity(metadata.bookmarks.len());
+        for entry in metadata.bookmarks {
+            let bookmark = catalog::Bookmark {
+                name: catalog::name(&entry.name)?.into(),
+                url: validate_url(&entry.url)?.ok_or("Snapshot bookmark is missing a URL.")?,
+            };
+            bookmark_ids.push(catalog::save_item(&tx, account, ItemKind::Bookmark, None, &bookmark)?);
+        }
+        let id = insert_workspace(&tx, account, &metadata.name, Settings {
+            icon: metadata.icon, notes: metadata.notes, launch_urls: metadata.launch_urls, bookmark_ids,
+            ..Settings::default()
+        })?;
+        tx.commit().map_err(db_error)?;
+        Ok(id)
+    }
+
     pub fn trash_workspace(
         &mut self,
         account: &str,

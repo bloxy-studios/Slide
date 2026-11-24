@@ -7,6 +7,7 @@ mod crx;
 mod importer;
 mod manager;
 mod runtime;
+mod sync;
 
 use catalog::{Bookmark, ItemKind, Label, Settings, Tag, TaskDraft, Template, View};
 use manager::{insert_workspace, Manager, Snapshot, TrashAction};
@@ -29,6 +30,19 @@ fn with_manager<T>(
 #[tauri::command]
 fn snapshot(state: State<'_, AppState>) -> Result<Snapshot, String> {
     with_manager(state, Manager::snapshot)
+}
+
+#[tauri::command]
+async fn seal_workspace(state: State<'_, AppState>, account: String, id: String, passphrase: String) -> Result<sync::Sealed, String> {
+    let metadata = with_manager(state, |manager| manager.export_sync_metadata(&account, &id))?;
+    tauri::async_runtime::spawn_blocking(move || sync::seal(metadata, passphrase)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn restore_workspace(state: State<'_, AppState>, account: String, envelope: sync::Envelope, sha256: String, passphrase: String) -> Result<String, String> {
+    let metadata = tauri::async_runtime::spawn_blocking(move || sync::open(envelope, sha256, passphrase))
+        .await.map_err(|e| e.to_string())??;
+    with_manager(state, |manager| manager.import_sync_metadata(&account, metadata))
 }
 
 #[tauri::command]
@@ -467,6 +481,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            seal_workspace,
+            restore_workspace,
             create_workspace,
             edit_workspace,
             trash_workspace,
