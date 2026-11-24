@@ -156,6 +156,11 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
           AND expires_at > clock_timestamp() RETURNING id,team_id,role`;
         if (!invite) fail(404, "Invitation unavailable.");
         await tx`INSERT INTO members VALUES (${invite.team_id},${actor.id},${invite.role}) ON CONFLICT DO NOTHING`;
+        if (invite.role === "admin") {
+          const [upgraded] = await tx`UPDATE members SET role='admin'
+            WHERE team_id=${invite.team_id} AND account_id=${actor.id} AND role='member' RETURNING account_id`;
+          if (upgraded) await audit(tx, actor, invite.team_id, actor.id, "member.promote");
+        }
         await audit(tx, actor, invite.team_id, invite.id, "invitation.accept");
         return { teamId: invite.team_id };
       });

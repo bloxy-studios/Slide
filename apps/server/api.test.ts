@@ -81,6 +81,24 @@ test.skipIf(!url)("server enforces workspace grants, invitation roles, session r
   expect((await call("/teams", "GET", alice.token)).status).toBe(401);
 });
 
+test.skipIf(!url)("an admin invitation upgrades an existing member and lower invitations never downgrade", async () => {
+  const { alice, bob, team } = await scenario();
+  const issueAndAccept = async (sender: typeof alice, recipient: typeof bob, role: string) => {
+    const invite = await ok(`/teams/${team.id}/invitations`, "POST", sender.token, { email: recipient.account.email, role });
+    await ok("/invitations/accept", "POST", recipient.token, { token: invite.token });
+  };
+  await issueAndAccept(alice, bob, "admin");
+  expect(await ok("/teams", "GET", bob.token)).toMatchObject([{ role: "admin" }]);
+  await issueAndAccept(alice, bob, "member");
+  expect(await ok("/teams", "GET", bob.token)).toMatchObject([{ role: "admin" }]);
+  await issueAndAccept(alice, alice, "admin");
+  expect(await ok("/teams", "GET", alice.token)).toMatchObject([{ role: "owner" }]);
+  const audit = await ok(`/teams/${team.id}/audit`, "GET", bob.token);
+  expect(audit.filter((row: { action: string }) => row.action === "member.promote")).toMatchObject([
+    { actorId: bob.account.id, subjectId: bob.account.id },
+  ]);
+});
+
 test.skipIf(!url)("exclusive leases serialize races, expire and reject a stale device after takeover", async () => {
   const { alice, bob, workspace, path } = await scenario();
   await ok(path + "/grants/" + bob.account.id, "PUT", alice.token, { role: "operator" });
