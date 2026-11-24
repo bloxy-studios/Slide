@@ -20,6 +20,7 @@ ungoogled-chromium and its platform packaging are BSD 3-Clause licensed. The ins
 - Continue to use the browser's normal, user-approved extension flow. No silent installation, arbitrary launch arguments, or proxy settings are added by this bundle. Per-workspace proxy configuration remains gated on verifying the route and fail-closed behavior.
 - An installed browser override is app-wide for new profiles. Existing profiles keep using their recorded browser brand at the same version or newer, or block if no compatible copy is available. Slide can identify a legacy profile from an already-running verified session; if it cannot identify a nonempty legacy profile, it blocks rather than risk its saved sessions. Back up the manager's data before upgrading. Browser-version downgrades and Chrome/Chromium encrypted storage migration are not supported.
 - The previous snapshot had version `160.0.8182.0`, higher than these releases. Profiles pinned to that snapshot will not open in these older builds. On macOS the different bundle identifier also keeps ungoogled-chromium separate from stock Chromium. Use a compatible copy of the recorded browser to keep the existing session, or clone settings into a fresh workspace and sign in again.
+- Milestone A and B discover a browser without saving its path. The only saved app-wide path in those releases comes from choosing a browser. Upgrading preserves that choice; select **Use bundled Chromium** to clear it for new profiles without changing browsers for existing profiles.
 
 ### Updates
 
