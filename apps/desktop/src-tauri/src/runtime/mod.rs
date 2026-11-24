@@ -119,7 +119,7 @@ impl Chromium {
     pub fn launch(
         executable: &Path,
         directory: &Path,
-        url: Option<&str>,
+        urls: &[String],
         reopen: bool,
     ) -> Result<Child, String> {
         let mut profile = OsString::from("--user-data-dir=");
@@ -131,12 +131,12 @@ impl Chromium {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         if reopen {
-            command
-                .arg("--new-window")
-                .arg(url.unwrap_or("chrome://newtab/"));
-        } else if let Some(url) = url {
-            command.arg(url);
+            command.arg("--new-window");
+            if urls.is_empty() {
+                command.arg("chrome://newtab/");
+            }
         }
+        command.args(urls);
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;

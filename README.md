@@ -2,7 +2,7 @@
 
 A desktop manager for persistent, isolated browser workspaces.
 
-Milestone A is local-only. **Open** starts the Google Chrome or Chromium installation shown in the manager. It opens a native browser window, not a Slide browser shell, and uses a private directory for that workspace. Workspace creation, opening, focusing and closing do not require a cloud account or internet access. Sites that are not local still need their usual network access.
+Slide Workspaces is local-only through Milestone B. **Open** starts the installed Google Chrome or Chromium shown in the manager, using a normal browser window and a private directory for that workspace. Workspace management, import, templates, reminders and trash work offline. External sites and the Chrome Web Store still need network access.
 
 ## Run
 
@@ -38,5 +38,6 @@ cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
 - [Milestone A acceptance and Mac artifact details](docs/milestone-a.md)
+- [Milestone B local workflows and import format](docs/milestone-b.md)
 - [Feature matrix and gaps](docs/feature-matrix.md)
 - [Runner inventory](docs/runners.md)
