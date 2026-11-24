@@ -176,15 +176,17 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
       }
       if (action === "members" && sub && method === "DELETE") {
         return db.begin(async tx => {
+          await tx`SELECT id FROM teams WHERE id=${team} FOR NO KEY UPDATE`;
           const role = await teamRole(tx, team, actor.id);
           requireAdmin(role);
           const member = uuid(sub);
           if (member === actor.id) fail(400, "Cannot remove yourself.");
-          const [removed] = await tx`DELETE FROM members m WHERE team_id=${team} AND account_id=${member}
-            AND (role='member' OR (role='admin' AND ${role}='owner'))
-            AND NOT EXISTS (SELECT FROM workspaces w WHERE w.team_id=m.team_id AND w.owner_id=m.account_id)
-            RETURNING account_id`;
-          if (!removed) fail(409, "Member unavailable, protected, or still owns workspaces.");
+          await tx`SELECT id FROM workspaces WHERE team_id=${team} AND owner_id=${member} ORDER BY id FOR SHARE`;
+          const [target] = await tx`SELECT role FROM members WHERE team_id=${team} AND account_id=${member} FOR UPDATE`;
+          const [owned] = await tx`SELECT id FROM workspaces WHERE team_id=${team} AND owner_id=${member} LIMIT 1`;
+          if (owned || !(target?.role === "member" || (target?.role === "admin" && role === "owner")))
+            fail(409, "Member unavailable, protected, or still owns workspaces.");
+          await tx`DELETE FROM members WHERE team_id=${team} AND account_id=${member}`;
           await tx`DELETE FROM grants g USING workspaces w WHERE w.id=g.workspace_id AND w.team_id=${team} AND g.account_id=${member}`;
           await audit(tx, actor, team, member, "member.remove");
           return { removed: true };
@@ -310,6 +312,9 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
     if (method !== "POST" || sub) fail(404, "Unknown endpoint.");
     const data = await body(request);
     return db.begin(async tx => {
+      if (action === "transfer") {
+        await tx`SELECT id FROM teams WHERE id=(SELECT team_id FROM workspaces WHERE id=${id}) FOR NO KEY UPDATE`;
+      }
       const row = await workspace(tx, id, actor, true);
       switch (action) {
         case "lease": {

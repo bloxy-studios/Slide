@@ -99,6 +99,40 @@ test.skipIf(!url)("an admin invitation upgrades an existing member and lower inv
   ]);
 });
 
+test.skipIf(!url)("member removal rechecks ownership after a concurrent transfer commits", async () => {
+  const { alice, bob, team, workspace, path } = await scenario();
+  let release!: () => void;
+  const canCommit = new Promise<void>(resolve => { release = resolve; });
+  const locked = Promise.withResolvers<number>();
+  const transfer = db!.begin(async tx => {
+    await tx`SELECT id FROM teams WHERE id=${team.id} FOR NO KEY UPDATE`;
+    await tx`SELECT id FROM workspaces WHERE id=${workspace.id} FOR UPDATE`;
+    await tx`SELECT role FROM members WHERE team_id=${team.id} AND account_id=${bob.account.id} FOR SHARE`;
+    await tx`UPDATE workspaces SET owner_id=${bob.account.id} WHERE id=${workspace.id}`;
+    const [{ pid }] = await tx`SELECT pg_backend_pid() AS pid`;
+    locked.resolve(pid);
+    await canCommit;
+  });
+  const pid = await Promise.race([locked.promise, transfer.then(() => { throw new Error("Transfer did not hold its locks."); })]);
+  const removal = call(`/teams/${team.id}/members/${bob.account.id}`, "DELETE", alice.token);
+  let blocked = false;
+  try {
+    const deadline = performance.now() + 2_000;
+    while (!blocked && performance.now() < deadline) {
+      const [state] = await db!`SELECT EXISTS (SELECT FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))) AS blocked`;
+      blocked = state.blocked;
+      if (!blocked) await Bun.sleep(10);
+    }
+  } finally {
+    release();
+    await transfer;
+  }
+  expect(blocked).toBe(true);
+  expect((await removal).status).toBe(409);
+  expect((await ok("/workspaces", "GET", bob.token))[0]).toMatchObject({ id: workspace.id, role: "owner" });
+  expect((await ok(path + "/lease", "POST", bob.token, { operation: "acquire" })).lease.holderId).toBe(bob.account.id);
+});
+
 test.skipIf(!url)("exclusive leases serialize races, expire and reject a stale device after takeover", async () => {
   const { alice, bob, workspace, path } = await scenario();
   await ok(path + "/grants/" + bob.account.id, "PUT", alice.token, { role: "operator" });
