@@ -234,6 +234,21 @@ impl Manager {
 
     pub fn remove_item(&mut self, account: &str, kind: ItemKind, id: &str) -> Result<(), String> {
         self.require_account(account)?;
+        if matches!(kind, ItemKind::Extension) {
+            self.chromium.refresh();
+            for mut workspace in self.rows(account, None)? {
+                if crx::installed(self.db()?, &workspace.id, id)?.is_none() {
+                    continue;
+                }
+                self.reconcile(&mut workspace)?;
+                if !matches!(workspace.status, Status::Closed | Status::Crashed) {
+                    return Err(format!(
+                        "Close the browser for “{}” before removing this extension. If the profile is locked, resolve the lock first.",
+                        workspace.name
+                    ));
+                }
+            }
+        }
         let packages = catalog::remove_item(self.db_mut()?, account, kind, id)?;
         let root = self.root()?;
         let mut failure = None;
@@ -1267,6 +1282,17 @@ mod tests {
             crx::approved_path(test.path(), workspace, &install).unwrap()
         }).collect();
         manager.trash_workspace("local", &second, TrashAction::Trash).unwrap();
+
+        manager.transitions.insert(first.clone(), Transition {
+            status: Status::Starting,
+            since: Instant::now(),
+        });
+        let error = manager.remove_item("local", ItemKind::Extension, &extension).unwrap_err();
+        assert!(error.contains("Close the browser for “Creator”"));
+        assert!(paths.iter().all(|path| path.join("badge.js").is_file()));
+        assert!(crx::installed(manager.db().unwrap(), &first, &extension).unwrap().is_some());
+        assert!(catalog::item::<catalog::Extension>(manager.db().unwrap(), "local", ItemKind::Extension, &extension).is_ok());
+        manager.transitions.remove(&first);
 
         manager.remove_item("local", ItemKind::Extension, &extension).unwrap();
         for (workspace, path) in [first.as_str(), second.as_str()].into_iter().zip(paths) {
