@@ -186,6 +186,8 @@ test.skipIf(!url)("encrypted handoff verifies bytes, retains versions, and fence
   const external = await account();
   const destination = await ok("/teams", "POST", external.token, { name: "Destination team" });
   const unregistered = `${randomUUID()}@slide.test`;
+  expect(await call(path + "/exchange", "POST", alice.token, { email: alice.account.email.toUpperCase(), version: 1 }))
+    .toEqual({ status: 400, data: { error: "Choose a different recipient." } });
   const missingInvite = await ok(path + "/exchange", "POST", alice.token, { email: unregistered, version: 1 });
   expect((await call(path + "/exchange", "POST", alice.token, { email: external.account.email, accountId: external.account.id, version: 1 })).status).toBe(400);
   const externalInvite = await ok(path + "/exchange", "POST", alice.token, { email: external.account.email.toUpperCase(), version: 1 });

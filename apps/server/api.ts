@@ -397,7 +397,9 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
           let recipientId = null;
           let recipientEmailDigest = null;
           if (data.email !== undefined) {
-            recipientEmailDigest = exchangeEmailDigest(email(data.email));
+            const address = email(data.email);
+            if (address === actor.email) fail(400, "Choose a different recipient.");
+            recipientEmailDigest = exchangeEmailDigest(address);
           } else {
             const [account] = await tx`SELECT id FROM accounts WHERE id=${uuid(data.accountId)}`;
             if (!account || account.id === actor.id) fail(400, "Choose a different existing account.");
