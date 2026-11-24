@@ -286,7 +286,7 @@ pub fn save_item<T: Serialize>(
     Ok(id)
 }
 
-pub fn remove_item(db: &mut Connection, account: &str, kind: ItemKind, id: &str) -> Result<()> {
+pub fn remove_item(db: &mut Connection, account: &str, kind: ItemKind, id: &str) -> Result<Vec<(String, String)>> {
     let tx = db.transaction().map_err(db_error)?;
     if tx
         .execute(
@@ -298,6 +298,18 @@ pub fn remove_item(db: &mut Connection, account: &str, kind: ItemKind, id: &str)
     {
         return Err("This catalog entry no longer exists.".into());
     }
+    let packages = if matches!(kind, ItemKind::Extension) {
+        let mut query = tx.prepare(
+            "DELETE FROM workspace_crx WHERE catalog_id=?1
+             AND workspace_id IN (SELECT id FROM workspaces WHERE account_id=?2)
+             RETURNING workspace_id, package_id",
+        ).map_err(db_error)?;
+        let rows = query.query_map(params![id, account], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(db_error)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(db_error)?
+    } else {
+        Vec::new()
+    };
     if matches!(kind, ItemKind::Template) {
         tx.execute("UPDATE account_options SET default_template=NULL WHERE account_id=?1 AND default_template=?2", params![account, id]).map_err(db_error)?;
     } else {
@@ -339,7 +351,8 @@ pub fn remove_item(db: &mut Connection, account: &str, kind: ItemKind, id: &str)
         }
         save_view(&tx, account, &view)?;
     }
-    tx.commit().map_err(db_error)
+    tx.commit().map_err(db_error)?;
+    Ok(packages)
 }
 
 fn clear_reference(settings: &mut Settings, kind: ItemKind, id: &str) -> bool {

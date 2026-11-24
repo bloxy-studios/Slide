@@ -12,10 +12,14 @@ import "./style.css";
 type Tab = "Workspaces" | "Library" | "Reminders" | "Import" | "Extensions" | "Trash";
 type WorkspaceMode = "manual" | "quick" | "template" | "clone" | "edit";
 type BatchAction = "open" | "close" | "tag" | "folder" | "network" | "trash" | "restore" | "purge";
+type ExtensionInstallOptions = { bundled: boolean; installedVersion: string | null; updateAvailable: boolean };
+type CrxReview = { name: string; browserId: string; version: string; permissions: string[] };
 type Modal =
   | { type: "workspace"; mode: WorkspaceMode; workspace?: Workspace }
   | { type: "library"; kind: LibraryKind; item?: LibraryItem }
   | { type: "extension"; extension?: Extension }
+  | { type: "extensionInstall"; extension: Extension; workspace: Workspace; options: ExtensionInstallOptions }
+  | { type: "crxReview"; workspace: Workspace; review: CrxReview; token: string }
   | { type: "account" | "task" }
   | { type: "confirm"; title: string; detail: string; confirm: () => void };
 
@@ -122,6 +126,22 @@ function App() {
       if (name === "remove_item") setView(undefined);
     }, success, close);
   };
+
+  function extensionInstallOptions(extension: Extension, workspace: Workspace) {
+    void run(async () => {
+      const options = await invoke<ExtensionInstallOptions>("extension_install_options", { account, id: workspace.id, extension: extension.id });
+      show({ type: "extensionInstall", extension, workspace, options });
+    }, "");
+  }
+
+  function reviewCrx(extension: Extension, workspace: Workspace) {
+    void run(async () => {
+      const path = extension.source === "fixture" ? null : await open({ multiple: false, filters: [{ name: "Chrome Extension", extensions: ["crx"] }] });
+      if (extension.source !== "fixture" && typeof path !== "string") return;
+      const [token, review] = await invoke<[string, CrxReview]>("review_crx", { account, id: workspace.id, extension: extension.id, path });
+      show({ type: "crxReview", workspace, review, token });
+    }, "");
+  }
 
   const catalog = data?.catalog;
   const currentView = catalog && (view?.owner === account ? view : catalog.view);
@@ -439,25 +459,25 @@ function App() {
       </section>}
       {tab === "Extensions" && <section>
         <div className="section-heading"><h2>Extension catalog</h2><button className="primary" disabled={disabled} onClick={() => show({ type: "extension" })}>Add extension</button></div>
-        <p>Assignments record intent, not browser install state. Install from the Web Store in each assigned workspace, or use Chrome’s <strong>Load unpacked</strong> flow if allowed. Silent install, CRX install and automatic removal are not available.</p>
+        <p>Assign an extension to a workspace, then open its install options. Bundled ungoogled-chromium uses signed CRX files you review and approve. Installed Chrome keeps the Web Store flow. Assignments alone do not install anything.</p>
         {catalog.extensions.map(extension => <article className="panel extension" key={extension.id}>
           <div className="section-heading"><h3>{extension.name}</h3><div className="actions">
-            <button disabled={disabled} onClick={() => show({ type: "extension", extension })}>Update</button>
+            <button disabled={disabled} onClick={() => show({ type: "extension", extension })}>{extension.source === "store" ? "Edit catalog pin" : "Stage update"}</button>
             <button disabled={disabled} onClick={() => show({ type: "confirm", title: `Remove ${extension.name} from the catalog?`, detail: "This removes assignments only. Disable or remove a browser-installed copy in chrome://extensions.", confirm: () => command("remove_item", { kind: "extension", id: extension.id }, "Catalog entry removed.") })}>Remove</button>
           </div></div>
-          <p>{extension.source} · {extension.version || "Version unspecified"} · {extension.updateMode}</p>
+          <p>{extension.source} · {extension.version || "Version unspecified"}</p>
           <p className="path">ID: {extension.browserId || `catalog ${extension.id} (Chrome assigns its own ID after loading)`}</p>
           <p>Permissions: {extension.permissions.join(", ") || "None listed"}</p>
           <p>Workspaces: {active.filter(row => row.settings.extensionIds.includes(extension.id)).map(row => row.name).join(", ") || "None"}</p>
           <p>Templates: {catalog.templates.filter(t => t.settings.extensionIds.includes(extension.id)).map(t => t.name).join(", ") || "None"}</p>
-          {extension.unpackedPath && <><p>In the assigned browser open <code>chrome://extensions</code>, turn on Developer mode, click Load unpacked, and choose this directory. To update, remove the old copy and load the staged version. Disable or remove it in Chrome.</p>
+          {extension.unpackedPath && <><p>For installed browsers that allow manual loading, use Developer mode and <strong>Load unpacked</strong> in <code>chrome://extensions</code>. {extension.source === "fixture" ? "For bundled workspaces, use the CRX flow below instead." : "ZIP staging does not install an extension in a bundled workspace."}</p>
             <label>Staged directory<input readOnly value={extension.unpackedPath} onFocus={e => e.target.select()} /></label></>}
-          {extension.installUrl && <div className="actions">
+          {(extension.installUrl || extension.source === "fixture") && <div className="actions">
             <select aria-label="Target workspace" value={extensionProfile} onChange={e => setExtensionProfile(e.target.value)}>
               <option value="">Select target workspace</option>{active.filter(row => row.settings.extensionIds.includes(extension.id)).map(row => <option key={row.id} value={row.id}>{row.name}</option>)}
             </select>
             <button disabled={disabled || !active.some(row => row.id === extensionProfile && row.settings.extensionIds.includes(extension.id))}
-              onClick={() => command("open_extension_page", { id: extensionProfile, extension: extension.id }, "Store page requested in the selected workspace.")}>Open store listing</button>
+              onClick={() => { const workspace = active.find(row => row.id === extensionProfile); if (workspace) extensionInstallOptions(extension, workspace); }}>Install options</button>
           </div>}
         </article>)}
       </section>}
@@ -476,6 +496,31 @@ function App() {
         {modal.type === "library" && <LibraryForm kind={modal.kind} item={modal.item} catalog={catalog} run={command} busy={busy} cancel={dismiss} />}
         {modal.type === "task" && <TaskForm workspaces={active} selected={selection.filter(id => active.some(w => w.id === id))} run={command} busy={busy} cancel={dismiss} />}
         {modal.type === "extension" && <ExtensionForm extension={modal.extension} run={command} busy={busy} cancel={dismiss} />}
+        {modal.type === "extensionInstall" && <section>
+          <h2>{modal.extension.name}: {modal.workspace.name}</h2>
+          {modal.options.bundled ? <>
+            <p>{modal.options.installedVersion ? `Approved version: ${modal.options.installedVersion}.` : "No approved CRX for this workspace."}</p>
+            {modal.options.updateAvailable && <p>Update available in the catalog: {modal.extension.version}. Supply the matching CRX and approve its permissions to install it.</p>}
+            <p>Close the workspace before installing or updating. Slide does not check online for new versions or update automatically.</p>
+            <div className="actions"><button disabled={busy} onClick={dismiss}>Cancel</button>
+              <button className="primary" disabled={busy} onClick={() => reviewCrx(modal.extension, modal.workspace)}>
+                {modal.extension.source === "fixture" ? "Review fixture CRX" : "Choose downloaded CRX"}</button></div>
+          </> : <>
+            <p>{modal.extension.installUrl ? "Open the Chrome Web Store in this workspace and approve the installation there." : "For this installed browser, use the catalog’s staged directory in chrome://extensions."}</p>
+            <div className="actions"><button disabled={busy} onClick={dismiss}>Done</button>
+              {modal.extension.installUrl && <button className="primary" disabled={busy}
+                onClick={() => command("open_extension_page", { id: modal.workspace.id, extension: modal.extension.id }, "Store page requested in the selected workspace.", true)}>Open store listing</button>}</div>
+          </>}
+        </section>}
+        {modal.type === "crxReview" && <section>
+          <h2>Approve {modal.review.name}?</h2>
+          <p>{modal.workspace.name} · version {modal.review.version} · ID {modal.review.browserId}</p>
+          <p>Permissions declared by the signed package:</p>
+          {modal.review.permissions.length ? <ul>{modal.review.permissions.map(permission => <li key={permission}>{permission}</li>)}</ul> : <p>None declared.</p>}
+          <p>Only approve extensions you trust. Slide will load this package the next time the selected workspace opens.</p>
+          <div className="actions"><button disabled={busy} onClick={dismiss}>Cancel</button>
+            <button className="primary" disabled={busy} onClick={() => command("approve_crx", { token: modal.token }, "CRX approved. It will load when the workspace opens.", true)}>Approve and install</button></div>
+        </section>}
         {modal.type === "account" && <form onSubmit={e => {
           e.preventDefault();
           const name = String(new FormData(e.currentTarget).get("name"));

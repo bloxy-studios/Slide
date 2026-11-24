@@ -97,7 +97,7 @@ impl Chromium {
     pub fn inspect_bundled(path: &Path) -> Result<RuntimeInfo, String> {
         let mut runtime = native::inspect(path)
             .map_err(|error| format!("Bundled Chromium is unavailable: {error} Reinstall Slide or choose another browser."))?;
-        if runtime.brand != "Chromium" {
+        if !matches!(runtime.brand.as_str(), "Chromium" | "ungoogled-chromium") {
             return Err("The bundled browser does not identify as Chromium. Reinstall Slide.".into());
         }
         runtime.bundled = true;
@@ -163,6 +163,7 @@ impl Chromium {
         directory: &Path,
         urls: &[String],
         reopen: bool,
+        extensions: &[PathBuf],
     ) -> Result<Child, String> {
         let mut profile = OsString::from("--user-data-dir=");
         profile.push(directory);
@@ -177,6 +178,16 @@ impl Chromium {
             if urls.is_empty() {
                 command.arg("chrome://newtab/");
             }
+        }
+        if !extensions.is_empty() {
+            let mut load = OsString::from("--load-extension=");
+            for (index, path) in extensions.iter().enumerate() {
+                if index != 0 {
+                    load.push(",");
+                }
+                load.push(path);
+            }
+            command.arg(load);
         }
         command.args(urls);
         #[cfg(target_os = "windows")]

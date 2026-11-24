@@ -2,6 +2,7 @@
 
 mod catalog;
 mod extensions;
+mod crx;
 mod importer;
 mod manager;
 mod runtime;
@@ -186,10 +187,7 @@ fn remove_item(
     kind: ItemKind,
     id: String,
 ) -> Result<(), String> {
-    with_manager(state, |manager| {
-        manager.require_account(&account)?;
-        catalog::remove_item(manager.db_mut()?, &account, kind, &id)
-    })
+    with_manager(state, |manager| manager.remove_item(&account, kind, &id))
 }
 
 #[tauri::command]
@@ -383,6 +381,21 @@ fn open_bookmark(
 }
 
 #[tauri::command]
+fn extension_install_options(state: State<'_, AppState>, account: String, id: String, extension: String) -> Result<crx::InstallOptions, String> {
+    with_manager(state, |manager| manager.extension_install_options(&account, &id, &extension))
+}
+
+#[tauri::command]
+fn review_crx(state: State<'_, AppState>, account: String, id: String, extension: String, path: Option<PathBuf>) -> Result<(uuid::Uuid, crx::Review), String> {
+    with_manager(state, |manager| manager.review_crx(&account, &id, &extension, path.as_deref()))
+}
+
+#[tauri::command]
+fn approve_crx(state: State<'_, AppState>, account: String, token: uuid::Uuid) -> Result<(), String> {
+    with_manager(state, |manager| manager.approve_crx(&account, token))
+}
+
+#[tauri::command]
 fn open_extension_page(
     state: State<'_, AppState>,
     account: String,
@@ -390,7 +403,9 @@ fn open_extension_page(
     extension: String,
 ) -> Result<(), String> {
     with_manager(state, |manager| {
-        manager.require_account(&account)?;
+        if manager.extension_install_options(&account, &id, &extension)?.bundled {
+            return Err("Use a downloaded CRX for this bundled browser workspace.".into());
+        }
         let extension: catalog::Extension =
             catalog::item(manager.db()?, &account, ItemKind::Extension, &extension)?;
         manager.open_workspace_url(
@@ -466,6 +481,9 @@ fn main() {
             save_store_extension,
             open_bookmark,
             open_extension_page,
+            extension_install_options,
+            review_crx,
+            approve_crx,
             choose_runtime,
             use_bundled_runtime,
             workspace_action

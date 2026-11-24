@@ -19,10 +19,11 @@ const FIXTURE_MANIFEST: &str = include_str!("../../../fixture/extension/manifest
 const FIXTURE_SCRIPT: &str = include_str!("../../../fixture/extension/badge.js");
 
 #[derive(Deserialize)]
-struct Manifest {
+pub struct Manifest {
     manifest_version: u32,
-    name: String,
-    version: String,
+    pub name: String,
+    pub version: String,
+    pub minimum_chrome_version: Option<String>,
     #[serde(default)]
     permissions: Vec<String>,
     #[serde(default)]
@@ -37,6 +38,19 @@ struct Manifest {
 #[derive(Deserialize)]
 struct ContentScript {
     matches: Vec<String>,
+}
+
+impl Manifest {
+    pub fn permissions(self) -> Vec<String> {
+        let mut permissions = self.permissions;
+        permissions.extend(self.host_permissions);
+        permissions.extend(self.optional_permissions.into_iter().map(|p| format!("Optional: {p}")));
+        permissions.extend(self.optional_host_permissions.into_iter().map(|p| format!("Optional: {p}")));
+        permissions.extend(self.content_scripts.into_iter().flat_map(|c| c.matches));
+        permissions.sort();
+        permissions.dedup();
+        permissions
+    }
 }
 
 fn package_path(name: &str) -> Result<PathBuf, String> {
@@ -65,9 +79,9 @@ fn package_path(name: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(name))
 }
 
-fn unpack(bytes: &[u8]) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+pub fn unpack(bytes: &[u8]) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| {
-        "Choose a ZIP with a manifest.json at its root. CRX packages are not supported."
+        "The extension package must contain a ZIP with manifest.json at its root."
     })?;
     if archive.len() > 512 {
         return Err("Use at most 512 files per extension ZIP.".into());
@@ -110,7 +124,7 @@ fn unpack(bytes: &[u8]) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
     Ok(files)
 }
 
-fn manifest(files: &[(PathBuf, Vec<u8>)]) -> Result<Manifest, String> {
+pub fn manifest(files: &[(PathBuf, Vec<u8>)]) -> Result<Manifest, String> {
     let manifest = files
         .iter()
         .find(|(path, _)| path == Path::new("manifest.json"))
@@ -176,33 +190,19 @@ pub fn stage(
             fs::write(target, content)
                 .map_err(|e| format!("Could not stage extension file: {e}"))?;
         }
-        let mut permissions = manifest.permissions;
-        permissions.extend(manifest.host_permissions);
-        permissions.extend(
-            manifest
-                .optional_permissions
-                .into_iter()
-                .map(|p| format!("Optional: {p}")),
-        );
-        permissions.extend(
-            manifest
-                .optional_host_permissions
-                .into_iter()
-                .map(|p| format!("Optional: {p}")),
-        );
-        permissions.extend(manifest.content_scripts.into_iter().flat_map(|c| c.matches));
-        permissions.sort();
-        permissions.dedup();
+        let name = catalog::name(&manifest.name)?.into();
+        let version = manifest.version.clone();
+        let permissions = manifest.permissions();
         catalog::save_item(
             db,
             account,
             ItemKind::Extension,
             id,
             &Extension {
-                name: catalog::name(&manifest.name)?.into(),
-                browser_id: String::new(),
+                name,
+                browser_id: if source == "fixture" { crate::crx::FIXTURE_ID.into() } else { String::new() },
                 source: source.into(),
-                version: manifest.version,
+                version,
                 permissions,
                 update_mode: "Manual reload or replace in Chrome".into(),
                 install_url: None,

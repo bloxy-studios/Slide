@@ -1,31 +1,46 @@
 # Bundled Chromium development installers
 
-Slide's development installers open the included Chromium by default. The manager displays its version, architecture and location. **Choose another browser** lets you explicitly select installed Chrome or Chromium; **Use bundled Chromium** clears that override. Source-mode development (`bun run dev`) still discovers installed browsers.
+Slide's development installers open the included ungoogled-chromium by default for new profiles. The manager displays its version, architecture and location. **Choose another browser** lets you explicitly select a compatible installed browser; **Use bundled Chromium** clears that override. Source-mode development (`bun run dev`) still discovers installed browsers.
 
-Use the [bundle command](../README.md#build-a-development-installer), not `tauri build` alone. It fetches the target's pinned ZIP over HTTPS, hashes it against the SHA-256 in [bundle.ts](../apps/desktop/bundle.ts), and verifies cached ZIPs before extracting. CI uses the same command. The repository does not contain browser binaries.
+Use the [bundle command](../README.md#build-a-development-installer), not `tauri build` alone. It downloads the official release asset over HTTPS and checks it against the SHA-256 in [bundle.ts](../apps/desktop/bundle.ts). It also verifies cached assets before mounting or extracting them. CI uses the same command; the repository does not contain browser binaries.
 
-| Target | Upstream snapshot | Archive |
+| Target | Platform release | Official asset |
 |---|---|---|
-| macOS arm64 | 1753271 | [chrome-mac.zip](https://storage.googleapis.com/chromium-browser-snapshots/Mac_Arm/1753271/chrome-mac.zip) |
-| macOS x86_64 | 1753296 | [chrome-mac.zip](https://storage.googleapis.com/chromium-browser-snapshots/Mac/1753296/chrome-mac.zip) |
-| Windows x64 | 1753232 | [chrome-win.zip](https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/1753232/chrome-win.zip) |
+| macOS arm64 | [157.0.8103.78-1.1](https://github.com/ungoogled-software/ungoogled-chromium-macos/releases/tag/157.0.8103.78-1.1) | [arm64 DMG](https://github.com/ungoogled-software/ungoogled-chromium-macos/releases/download/157.0.8103.78-1.1/ungoogled-chromium_157.0.8103.78-1.1_arm64-macos.dmg) |
+| macOS x86_64 | [157.0.8103.78-1.1](https://github.com/ungoogled-software/ungoogled-chromium-macos/releases/tag/157.0.8103.78-1.1) | [x86_64 DMG](https://github.com/ungoogled-software/ungoogled-chromium-macos/releases/download/157.0.8103.78-1.1/ungoogled-chromium_157.0.8103.78-1.1_x86_64-macos.dmg) |
+| Windows x64 | [158.0.8127.36-1.1](https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/tag/158.0.8127.36-1.1) | [x64 portable ZIP](https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/158.0.8127.36-1.1/ungoogled-chromium_158.0.8127.36-1.1_windows_x64.zip) |
 
-These are unbranded [Chromium Project continuous builds](https://www.chromium.org/getting-involved/download-chromium/), selected because they come from the upstream project and provide a full browser for each target. They are best-effort snapshots, not Google Chrome Stable; their revisions may differ across targets. Playwright's current desktop Chromium download actually uses Chrome for Testing, which is for testing, not a redistribution choice for general browsing. Community ungoogled-Chromium releases have separate macOS and Windows maintainers, release timing and patches.
+These are non-prerelease builds from the official ungoogled-software macOS and Windows repositories, not Chromium continuous-build snapshots or Google Chrome Stable. The two platform projects release independently, so their versions can differ. Check the release dates rather than assuming either one already contains every Chromium security fix.
 
-The installers include the [Chromium license notice](chromium-license.txt); third-party notices are included in Chromium's `chrome://credits`. macOS includes the nested browser and framework in `Contents/Frameworks` and signs the browser and the manager ad hoc. Windows uses the Tauri resources directory for NSIS and MSI; Chromium's upstream test executable and standalone setup program are omitted. Neither platform has a production distribution signature; the Mac DMG is not notarized.
+Bundled ungoogled-chromium [does not include Google Safe Browsing](https://ungoogled-software.github.io/ungoogled-chromium-wiki/faq#why-is-safe-browsing-disabled). It does not provide Safe Browsing warnings for known malicious sites or downloads. Use an installed browser with that protection if you need it.
+
+ungoogled-chromium and its platform packaging are BSD 3-Clause licensed. The installers include the [ungoogled-chromium notice](ungoogled-chromium-license.txt) and the [Chromium notice](chromium-license.txt); third-party notices are in `chrome://credits`. macOS copies the browser from the read-only release DMG and signs the nested app in `Contents/Frameworks` and the manager ad hoc. Windows uses the portable ZIP contents, not the release's installer EXE, for both NSIS and MSI. Neither platform has a production distribution signature; the Mac DMG is not notarized.
 
 ### Profile behavior
 
 - Each workspace still uses its own app-owned `--user-data-dir` and opens a normal, non-kiosk browser window with the configured launch URLs. Slide seeds the Chromium profile name in `Default/Preferences` if the workspace data directory is empty; it does not overwrite existing Preferences or Chromium-managed Local State. A settings-only clone gets a fresh UUID and browser directory.
-- Continue to use the browser's normal, user-approved extension flow. No silent installation, arbitrary launch arguments, or proxy settings are added by this bundle. Per-workspace proxy configuration remains gated on verifying the route and fail-closed behavior.
+- No silent extension installation, arbitrary launch arguments, or proxy settings are provided. Per-workspace proxy configuration remains gated on verifying the route and fail-closed behavior.
 - An installed browser override is app-wide for new profiles. Existing profiles keep using their recorded browser brand at the same version or newer, or block if no compatible copy is available. Slide can identify a legacy profile from an already-running verified session; if it cannot identify a nonempty legacy profile, it blocks rather than risk its saved sessions. Back up the manager's data before upgrading. Browser-version downgrades and Chrome/Chromium encrypted storage migration are not supported.
+- The previous snapshot had version `160.0.8182.0`, higher than these releases. Profiles pinned to that snapshot will not open in these older builds. On macOS the different bundle identifier also keeps ungoogled-chromium separate from stock Chromium. Use a compatible copy of the recorded browser to keep the existing session, or clone settings into a fresh workspace and sign in again.
 - Milestone A and B discover a browser without saving its path. The only saved app-wide path in those releases comes from choosing a browser. Upgrading preserves that choice; select **Use bundled Chromium** to clear it for new profiles without changing browsers for existing profiles.
 
 ### Updates
 
-The browser does not self-update. Pins and hashes must be refreshed together, following upstream security releases, with an installed-app smoke test on each supported target. A development snapshot and an ad hoc signature are not a production update or security support policy.
+The browser does not self-update. Follow the macOS and Windows release pages above for security updates. For each target, select a non-prerelease asset matching its architecture and format, verify the download's SHA-256 against the digest published with that asset, and update the release, asset suffix and hash together in `bundle.ts`. Update this table and review the release's license notices. Build all three targets and smoke-test the installed apps, including reopening a profile from the previous pin and confirming an older runtime still cannot open a newer profile.
+
+### Extensions
+
+For a bundled workspace, add the extension's catalog ID and exact version, assign it to the workspace, then close that workspace. In **Extensions**, select the workspace and open **Install options → Choose downloaded CRX**. Slide accepts signed Manifest V3 CRX3 files up to 8 MiB, verifies the package signature and signing-key-derived ID against the catalog entry, and checks the exact version pin. It previews required, optional, and content-script permissions from the signed manifest. Only **Approve and install** writes and enables the unpacked copy for the next launch of that workspace.
+
+Slide does not fetch extension updates in the background. If you raise the catalog pin above the approved version, the workspace's install options show the newer pinned version. Supply the matching CRX and approve it separately. The catalog does not check whether a matching package is available online. For an installed Chrome workspace, **Install options → Open store listing** uses the browser's Web Store approval instead. The fixture entry supplies a signed CRX for testing without a download.
+
+In a separate macOS arm64 QA profile, the app installed from the DMG displayed the fixture's [CRX permission review](evidence/mac-ungoogled-crx-review.png). After approval and workspace launch, bundled ungoogled-chromium displayed the [fixture badge v1.0.0](evidence/mac-ungoogled-crx-badge.png).
 
 ### macOS arm64 installed-app check
+
+The app copied from the DMG ran with a separate QA home directory. The [manager](evidence/mac-ungoogled-manager.png) reported both workspaces running. [Creator](evidence/mac-ungoogled-creator.png) and [Viewer](evidence/mac-ungoogled-viewer.png) were signed into the same loopback fixture at the same time, with distinct cookies, localStorage, and IndexedDB markers. Closing Viewer from the manager left Creator signed in. The QA home had no default Keychain; the test dismissed that prompt without resetting Keychain. This checks live session isolation, not encrypted cookie persistence across restarts.
+
+### Previous Chromium snapshot: macOS arm64 installed-app check
 
 The QA app was copied out of its DMG under a separate application ID so existing profiles were not modified. The [manager](evidence/mac-bundled-manager.png) showed Bundled Chromium 160.0.8182.0 and both workspaces running. Folve Creator and Folve Viewer opened the same loopback fixture in [ordinary Chromium windows](evidence/mac-bundled-creator-viewer.png) with different cookies, localStorage and IndexedDB markers. Closing Viewer from the manager left Creator running; [reopening Viewer](evidence/mac-bundled-viewer-reopened.png) restored its own fixture identity. Both profiles retained the names set by the manager. Chromium showed its normal first-run dialog; the OS default browser was left unchanged.
 
