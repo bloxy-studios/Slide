@@ -148,10 +148,20 @@ pub fn approved_path(root: &Path, workspace: &str, install: &Installed) -> Resul
 pub fn remove_workspace(root: &Path, workspace: &str) -> Result<(), String> {
     let root = dunce::canonicalize(root).map_err(|e| e.to_string())?;
     let path = workspace_directory(&root, workspace)?;
-    match fs::symlink_metadata(&path) {
+    remove_directory(&path)
+}
+
+pub fn remove_package(root: &Path, workspace: &str, package: &str) -> Result<(), String> {
+    let root = dunce::canonicalize(root).map_err(|e| e.to_string())?;
+    let path = workspace_directory(&root, workspace)?.join(component(package)?);
+    remove_directory(&path)
+}
+
+fn remove_directory(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
         Ok(_) => {
-            expect_directory(&path)?;
-            fs::remove_dir_all(&path)
+            expect_directory(path)?;
+            fs::remove_dir_all(path)
                 .map_err(|e| format!("Could not remove workspace extensions: {e}"))
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),

@@ -187,10 +187,7 @@ fn remove_item(
     kind: ItemKind,
     id: String,
 ) -> Result<(), String> {
-    with_manager(state, |manager| {
-        manager.require_account(&account)?;
-        catalog::remove_item(manager.db_mut()?, &account, kind, &id)
-    })
+    with_manager(state, |manager| manager.remove_item(&account, kind, &id))
 }
 
 #[tauri::command]

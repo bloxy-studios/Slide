@@ -232,6 +232,22 @@ impl Manager {
         Ok(&self.catalog()?.root)
     }
 
+    pub fn remove_item(&mut self, account: &str, kind: ItemKind, id: &str) -> Result<(), String> {
+        self.require_account(account)?;
+        let packages = catalog::remove_item(self.db_mut()?, account, kind, id)?;
+        let root = self.root()?;
+        let mut failure = None;
+        for (workspace, package) in packages {
+            if let Err(error) = crx::remove_package(root, &workspace, &package) {
+                failure.get_or_insert(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(format!("The catalog entry was removed, but extension cleanup failed: {error}")),
+            None => Ok(()),
+        }
+    }
+
     pub fn import_row(
         &mut self,
         account: &str,
@@ -1232,6 +1248,43 @@ mod tests {
         manager.choose_runtime(chrome).unwrap();
         assert!(manager.extension_install_options("local", &id, &extension).unwrap().bundled);
         assert!(!manager.extension_install_options("local", &other, &extension).unwrap().bundled);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn removing_catalog_extension_releases_approvals_and_allows_reapproval() {
+        let test = tempfile::tempdir().unwrap();
+        let browser = mac_browser(test.path(), "Chromium", "io.ungoogled-software.ungoogled-chromium", "157.0.8103.78");
+        let mut manager = Manager::with_bundle(test.path().into(), Some(browser)).unwrap();
+        let extension = crate::extensions::stage(manager.db().unwrap(), test.path(), "local", None, "fixture", None, false).unwrap();
+        let settings = Settings { extension_ids: vec![extension.clone()], ..Default::default() };
+        let first = insert_workspace(manager.db().unwrap(), "local", "Creator", settings.clone()).unwrap();
+        let second = insert_workspace(manager.db().unwrap(), "local", "Viewer", settings).unwrap();
+        let paths: Vec<_> = [&first, &second].into_iter().map(|workspace| {
+            let (token, _) = manager.review_crx("local", workspace, &extension, None).unwrap();
+            manager.approve_crx("local", token).unwrap();
+            let install = crx::installed(manager.db().unwrap(), workspace, &extension).unwrap().unwrap();
+            crx::approved_path(test.path(), workspace, &install).unwrap()
+        }).collect();
+        manager.trash_workspace("local", &second, TrashAction::Trash).unwrap();
+
+        manager.remove_item("local", ItemKind::Extension, &extension).unwrap();
+        for (workspace, path) in [first.as_str(), second.as_str()].into_iter().zip(paths) {
+            assert!(crx::installed(manager.db().unwrap(), workspace, &extension).unwrap().is_none());
+            assert!(!path.exists());
+            assert!(manager.rows("local", Some(workspace)).unwrap()[0].settings.extension_ids.is_empty());
+        }
+
+        let new_entry = crate::extensions::stage(manager.db().unwrap(), test.path(), "local", None, "fixture", None, false).unwrap();
+        assert_ne!(new_entry, extension);
+        let settings = Settings { extension_ids: vec![new_entry.clone()], ..Default::default() };
+        manager.db().unwrap().execute(
+            "UPDATE workspaces SET settings=?2 WHERE id=?1",
+            params![first, catalog::encode(&settings).unwrap()],
+        ).unwrap();
+        let (token, _) = manager.review_crx("local", &first, &new_entry, None).unwrap();
+        manager.approve_crx("local", token).unwrap();
+        assert!(crx::installed(manager.db().unwrap(), &first, &new_entry).unwrap().is_some());
     }
 
     #[cfg(target_os = "macos")]
