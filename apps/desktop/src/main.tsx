@@ -470,7 +470,8 @@ function App() {
         </>}
       </section>}
       {tab === "Connections" && <Connections key={catalog.activeAccount} account={catalog.activeAccount}
-        entries={catalog.connections} workspaces={data.workspaces} run={command} disabled={disabled} />}
+        entries={catalog.connections} workspaces={data.workspaces} run={command} disabled={disabled}
+        saved={() => void run(async () => {}, "HTTP proxy saved.")} />}
       <div hidden={tab !== "Shared"}><Cloud key={catalog.activeAccount} account={catalog.activeAccount}
         workspaces={data.workspaces} refresh={refresh} /></div>
       {tab === "Diagnostics" && <Diagnostics {...data} />}

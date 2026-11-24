@@ -3,14 +3,16 @@ import { useRef, useState } from "react";
 import type { SavedConnection, Workspace } from "./catalog";
 import type { Run } from "./forms";
 
-export function Connections({ account, entries, workspaces, run, disabled }: {
-  account: string; entries: SavedConnection[]; workspaces: Workspace[]; run: Run; disabled: boolean;
+export function Connections({ account, entries, workspaces, run, disabled, saved }: {
+  account: string; entries: SavedConnection[]; workspaces: Workspace[]; run: Run; disabled: boolean; saved: () => void;
 }) {
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [csv, setCsv] = useState("");
   const [query, setQuery] = useState("");
   const [draftStatus, setDraftStatus] = useState("");
+  const [draftError, setDraftError] = useState("");
+  const [saving, setSaving] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const [target, setTarget] = useState("");
   const [username, setUsername] = useState("");
@@ -42,15 +44,29 @@ export function Connections({ account, entries, workspaces, run, disabled }: {
       setDraftStatus(String(error));
     } finally { setPending(false); }
   }
+  async function save() {
+    if (saving || pending || disabled) return;
+    setSaving(true); setDraftError("");
+    try {
+      await invoke("save_connection", { account, name, endpoint });
+    } catch (error) {
+      setDraftError(String(error));
+      return;
+    } finally {
+      setSaving(false);
+    }
+    dialog.current?.close();
+    saved();
+  }
   return <section>
     <div className="section-heading"><h2>Saved proxies</h2><div className="actions">
       <input type="search" aria-label="Search proxies" placeholder="Name or address" value={query} onChange={e => setQuery(e.target.value)} />
-      <button className="primary" disabled={disabled} onClick={() => { setName(""); setEndpoint(""); setDraftStatus(""); dialog.current?.showModal(); }}>+ Add proxy</button>
+      <button className="primary" disabled={disabled} onClick={() => { setName(""); setEndpoint(""); setDraftStatus(""); setDraftError(""); dialog.current?.showModal(); }}>+ Add proxy</button>
     </div></div>
     <p>Assign saved proxies when editing a profile. Required proxy launch has no Direct fallback and is available only with bundled Chromium on macOS arm64.</p>
-    <dialog ref={dialog} onCancel={e => { if (pending) e.preventDefault(); }}>
+    <dialog ref={dialog} onCancel={e => { if (pending || saving) e.preventDefault(); }}>
       <form onSubmit={event => {
-        event.preventDefault(); run("save_connection", { name, endpoint }, "HTTP proxy saved."); dialog.current?.close();
+        event.preventDefault(); void save();
       }}>
         <h2>Add proxy</h2>
         <label>Proxy type<input value="HTTP" readOnly /></label>
@@ -59,14 +75,15 @@ export function Connections({ account, entries, workspaces, run, disabled }: {
           <option>DB-IP</option><option disabled>IP-API (HTTPS plan not configured)</option>
         </select></label>
         <p>DB-IP receives the browser’s public IP at startup. Proxy detection below checks the local QA fixture, not geolocation.</p>
-        <label>Display name<input required maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
-        <label>HTTP proxy endpoint<input required value={endpoint} onChange={event => { setEndpoint(event.target.value); setDraftStatus(""); }} placeholder="http://127.0.0.1:4312" /></label>
+        <label>Display name<input required disabled={saving} maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
+        <label>HTTP proxy endpoint<input required disabled={saving} value={endpoint} onChange={event => { setEndpoint(event.target.value); setDraftStatus(""); }} placeholder="http://127.0.0.1:4312" /></label>
         <p>Slide does not store proxy credentials. Chromium prompts for them when required.</p>
         <p role="status">{draftStatus}</p>
+        {draftError && <p className="error" role="alert">{draftError}</p>}
         <div className="actions">
-          <button type="button" disabled={pending} onClick={() => dialog.current?.close()}>Cancel</button>
-          <button type="button" disabled={!endpoint || pending || disabled} onClick={() => void detect()}>{pending ? "Checking…" : "Proxy detection"}</button>
-          <button className="primary" disabled={disabled || pending}>Confirm</button>
+          <button type="button" disabled={pending || saving} onClick={() => dialog.current?.close()}>Cancel</button>
+          <button type="button" disabled={!endpoint || pending || saving || disabled} onClick={() => void detect()}>{pending ? "Checking…" : "Proxy detection"}</button>
+          <button className="primary" disabled={disabled || pending || saving}>{saving ? "Saving…" : "Confirm"}</button>
         </div>
       </form>
     </dialog>
