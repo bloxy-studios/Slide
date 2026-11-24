@@ -83,7 +83,7 @@ function App() {
   }, [account]);
 
   const showSearch = useEffectEvent(() => {
-    navigate("Workspaces");
+    if (tab !== "Workspaces") navigate("Workspaces");
     requestAnimationFrame(() => search.current?.focus());
   });
 
