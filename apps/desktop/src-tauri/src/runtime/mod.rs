@@ -47,6 +47,8 @@ pub struct Chromium {
 }
 
 impl Chromium {
+    pub const BACKGROUND_CLOSE_HINT: Option<&'static str> = native::BACKGROUND_CLOSE_HINT;
+
     pub fn new() -> Self {
         Self {
             processes: System::new(),

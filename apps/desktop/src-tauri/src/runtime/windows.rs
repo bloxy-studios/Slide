@@ -20,6 +20,9 @@ use windows_sys::Win32::{
     },
 };
 
+const NO_WINDOW: &str = "Open this workspace first to close it from the manager.";
+pub const BACKGROUND_CLOSE_HINT: Option<&str> = Some(NO_WINDOW);
+
 pub fn candidates() -> Vec<PathBuf> {
     [
         "ProgramW6432",
@@ -241,6 +244,6 @@ pub fn close(identity: Identity) -> Result<(), String> {
     if requested {
         Ok(())
     } else {
-        Err("No browser window can receive a close request. Quit this browser from its taskbar or tray if it is still running.".into())
+        Err(NO_WINDOW.into())
     }
 }

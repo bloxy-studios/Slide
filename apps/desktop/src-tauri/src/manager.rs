@@ -26,6 +26,16 @@ enum Status {
     Crashed,
 }
 
+impl Status {
+    fn close_unavailable_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Running => None,
+            Self::Background => Chromium::BACKGROUND_CLOSE_HINT,
+            _ => Some("No active browser session can be closed."),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
@@ -42,6 +52,7 @@ struct Workspace {
     start_url: Option<String>,
     status: Status,
     detail: Option<String>,
+    can_close: bool,
     #[serde(skip)]
     identity: Option<Identity>,
 }
@@ -190,6 +201,7 @@ impl Manager {
                             .map(|(pid, started)| Identity { pid, started }),
                         status: Status::Closed,
                         detail: row.get(5)?,
+                        can_close: false,
                     })
                 })
                 .map_err(db_error)?;
@@ -304,6 +316,14 @@ impl Manager {
         };
         workspace.status = status;
         workspace.identity = identity;
+        let close_unavailable = status.close_unavailable_reason();
+        workspace.can_close = close_unavailable.is_none();
+        if status == Status::Background {
+            workspace.detail = workspace
+                .detail
+                .take()
+                .or_else(|| close_unavailable.map(str::to_owned));
+        }
         if identity != old_identity || exit_note != old_note {
             self.catalog()?
                 .db
@@ -355,6 +375,9 @@ impl Manager {
                 Err("No verified browser window is open. Use Open to reopen this workspace.".into())
             }
             Operation::Close => {
+                if let Some(reason) = workspace.status.close_unavailable_reason() {
+                    return Err(reason.into());
+                }
                 let identity = workspace.identity.ok_or("The browser is already closed.")?;
                 let directory = dunce::canonicalize(directory)
                     .map_err(|e| format!("Profile directory is unavailable: {e}"))?;
@@ -535,6 +558,15 @@ mod tests {
         assert_eq!(
             session_status(&session, Some(&closing)),
             (Status::Closing, false)
+        );
+    }
+
+    #[test]
+    fn background_close_availability_matches_native_runtime() {
+        assert!(Status::Running.close_unavailable_reason().is_none());
+        assert_eq!(
+            Status::Background.close_unavailable_reason().is_some(),
+            cfg!(target_os = "windows")
         );
     }
 

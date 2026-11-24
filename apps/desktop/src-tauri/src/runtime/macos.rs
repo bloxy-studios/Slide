@@ -9,6 +9,8 @@ use std::{
 };
 use sysinfo::{Pid, System};
 
+pub const BACKGROUND_CLOSE_HINT: Option<&str> = None;
+
 pub fn candidates() -> Vec<PathBuf> {
     let mut locations = vec![PathBuf::from("/Applications")];
     if let Some(home) = std::env::var_os("HOME") {

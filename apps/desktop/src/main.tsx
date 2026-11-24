@@ -8,7 +8,7 @@ import "./style.css";
 type Runtime = { path: string; brand: string; version: string; architecture: string };
 type Operation = "open" | "focus" | "close";
 type Status = "closed" | "running" | "background" | "starting" | "closing" | "locked" | "crashed";
-type Workspace = { id: string; name: string; startUrl: string | null; status: Status; detail: string | null };
+type Workspace = { id: string; name: string; startUrl: string | null; status: Status; detail: string | null; canClose: boolean };
 type Snapshot = { runtime: Runtime | null; runtimeError: string | null; workspaces: Workspace[] };
 
 const statusLabels: Record<Status, string> = {
@@ -139,7 +139,7 @@ function App() {
             <div className="actions" aria-label={`Actions for ${workspace.name}`}>
               <button className="primary" disabled={pending || (!data.runtime && !active) || workspace.status === "locked"} onClick={() => action(workspace, "open")}>Open</button>
               <button disabled={pending || workspace.status !== "running"} onClick={() => action(workspace, "focus")}>Focus</button>
-              <button disabled={pending || !active} onClick={() => action(workspace, "close")}>Close</button>
+              <button disabled={pending || !workspace.canClose} onClick={() => action(workspace, "close")}>Close</button>
             </div>
           </li>;
         })}
