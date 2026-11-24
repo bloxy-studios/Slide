@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     io::{Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+    net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -241,7 +241,12 @@ fn serve_connections(
                     workers.push(worker);
                 }
             }
-            Ok(_) => (),
+            Ok((mut stream, _)) => {
+                if stream.set_nonblocking(true).is_ok() {
+                    let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                    let _ = stream.shutdown(Shutdown::Write);
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(25)),
             Err(_) => break,
         }
@@ -279,6 +284,43 @@ mod tests {
         drop((idle, ready));
         server.join().unwrap();
         served_before_release.unwrap();
+    }
+
+    #[test]
+    fn bridge_returns_503_and_retry_after_at_capacity() {
+        use std::{io::{BufRead, BufReader}, sync::mpsc};
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = stop.clone();
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel::<()>();
+        let blocked = Mutex::new(blocked);
+        let server = std::thread::spawn(move || serve_connections(listener, server_stop, move |_, _| {
+            entered.send(()).unwrap();
+            let _ = blocked.lock().unwrap().recv();
+        }));
+        let clients: Vec<_> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(address).unwrap()).collect();
+        for _ in &clients {
+            started.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let mut extra = TcpStream::connect(address).unwrap();
+        extra.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        write!(extra, "GET /v1/workspaces HTTP/1.1\r\nHost: {address}\r\n\r\n").unwrap();
+        let mut reply = BufReader::new(extra);
+        let headers: Vec<_> = (0..5).map(|_| {
+            let mut line = String::new();
+            reply.read_line(&mut line).map(|_| line)
+        }).collect();
+        stop.store(true, Ordering::Release);
+        drop(release);
+        server.join().unwrap();
+        let headers = headers.into_iter().collect::<std::io::Result<Vec<_>>>().unwrap();
+        assert_eq!(headers[0], "HTTP/1.1 503 Service Unavailable\r\n");
+        assert!(headers.iter().any(|line| line == "Retry-After: 1\r\n"));
+        assert!(headers.iter().any(|line| line == "Connection: close\r\n"));
     }
 
     #[test]
