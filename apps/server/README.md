@@ -1,5 +1,7 @@
 # Server
 
+The server publishes its OpenAPI contract at `GET /v1/openapi.json`. See the [Milestone E runbook](../../docs/milestone-e.md) for API token management, scope and rate limits, and sandbox limitations.
+
 This is the Milestone D loopback development API. From the repository root:
 
 ```sh

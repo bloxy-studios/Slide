@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Connections } from "./connections";
+import { Automation } from "./automation";
 import { Cloud } from "./cloud";
 import { Diagnostics } from "./diagnostics";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
@@ -12,7 +13,7 @@ import { Checklist, ExtensionForm, kinds, LibraryForm, TaskForm, Tasks, Workspac
 import type { LibraryItem, LibraryKind, Run } from "./forms";
 import "./style.css";
 
-type Tab = "Workspaces" | "Library" | "Shared" | "Connections" | "Reminders" | "Import" | "Extensions" | "Diagnostics" | "Trash";
+type Tab = "Workspaces" | "Library" | "Shared" | "Connections" | "Reminders" | "Import" | "Extensions" | "Automation" | "Diagnostics" | "Trash";
 type WorkspaceMode = "manual" | "quick" | "template" | "clone" | "edit";
 type BatchAction = "open" | "close" | "tag" | "folder" | "network" | "trash" | "restore" | "purge";
 type ExtensionInstallOptions = { bundled: boolean; installedVersion: string | null; updateAvailable: boolean };
@@ -26,7 +27,7 @@ type Modal =
   | { type: "account" | "task" }
   | { type: "confirm"; title: string; detail: string; confirm: () => void };
 
-const tabs: Tab[] = ["Workspaces", "Library", "Shared", "Connections", "Reminders", "Import", "Extensions", "Diagnostics", "Trash"];
+const tabs: Tab[] = ["Workspaces", "Library", "Shared", "Connections", "Reminders", "Import", "Extensions", "Automation", "Diagnostics", "Trash"];
 const batchLabels: Record<BatchAction, string> = {
   open: "Open", close: "Close", tag: "Add tag", folder: "Move to folder",
   network: "Test fixture route", trash: "Move to trash", restore: "Restore", purge: "Permanently delete",
@@ -465,6 +466,7 @@ function App() {
       <div hidden={tab !== "Shared"}><Cloud key={catalog.activeAccount} account={catalog.activeAccount}
         workspaces={data.workspaces} refresh={refresh} /></div>
       {tab === "Diagnostics" && <Diagnostics {...data} />}
+      {tab === "Automation" && <Automation key={catalog.activeAccount} account={catalog.activeAccount} workspaces={data.workspaces} refresh={refresh} />}
       {tab === "Extensions" && <section>
         <div className="section-heading"><h2>Extension catalog</h2><button className="primary" disabled={disabled} onClick={() => show({ type: "extension" })}>Add extension</button></div>
         <p>Assign an extension to a workspace, then open its install options. Bundled ungoogled-chromium uses signed CRX files you review and approve. Installed Chrome keeps the Web Store flow. Assignments alone do not install anything.</p>

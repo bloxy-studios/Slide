@@ -42,7 +42,7 @@ impl Status {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     Open,
@@ -60,6 +60,7 @@ struct Workspace {
     created_at: i64,
     trashed_at: Option<i64>,
     status: Status,
+    automation_cdp: bool,
     detail: Option<String>,
     can_close: bool,
     #[serde(skip)]
@@ -129,6 +130,7 @@ pub struct Manager {
     bundled_path: Option<PathBuf>,
     children: HashMap<String, Vec<ChildProcess>>,
     transitions: HashMap<String, Transition>,
+    debug_launches: HashMap<String, u32>,
     pub import_preview: Option<(String, crate::importer::Preview)>,
     crx_review: Option<(Uuid, String, String, String, crx::Package)>,
 }
@@ -163,6 +165,7 @@ impl Manager {
             include_str!("../migrations/004_profile_browser_version.sql"),
             include_str!("../migrations/005_workspace_crx.sql"),
             include_str!("../migrations/006_connections.sql"),
+            include_str!("../migrations/007_bridge.sql"),
         ];
         if version as usize > migrations.len() {
             return Err(
@@ -201,6 +204,7 @@ impl Manager {
             bundled_path,
             children: HashMap::new(),
             transitions: HashMap::new(),
+            debug_launches: HashMap::new(),
             import_preview: None,
             crx_review: None,
         })
@@ -214,6 +218,7 @@ impl Manager {
             bundled_path: None,
             children: HashMap::new(),
             transitions: HashMap::new(),
+            debug_launches: HashMap::new(),
             import_preview: None,
             crx_review: None,
         }
@@ -465,7 +470,7 @@ impl Manager {
 
     fn rows(&self, account: &str, id: Option<&str>) -> Result<Vec<Workspace>, String> {
         let mut statement = self.db()?.prepare(
-            "SELECT id,name,start_url,pid,started,exit_note,settings,created_at,trashed_at,browser_brand,browser_path,browser_version FROM workspaces
+            "SELECT id,name,start_url,pid,started,exit_note,settings,created_at,trashed_at,browser_brand,browser_path,browser_version,automation_cdp FROM workspaces
              WHERE account_id=?1 AND (?2 IS NULL OR id=?2) ORDER BY rowid",
         ).map_err(db_error)?;
         let rows = statement
@@ -481,6 +486,7 @@ impl Manager {
                             .zip(row.get::<_, Option<u64>>(4)?)
                             .map(|(pid, started)| Identity { pid, started }),
                         status: Status::Closed,
+                        automation_cdp: row.get(12)?,
                         detail: row.get(5)?,
                         can_close: false,
                         settings: Settings::default(),
@@ -859,6 +865,53 @@ impl Manager {
         self.perform_with_url(id, operation, None)
     }
 
+    pub fn set_automation_cdp(&mut self, account: &str, id: &str, enabled: bool) -> Result<(), String> {
+        self.require_account(account)?;
+        let mut workspace = self.rows(account, Some(id))?.pop().filter(|row| row.trashed_at.is_none())
+            .ok_or("Workspace unavailable.")?;
+        self.chromium.refresh();
+        self.reconcile(&mut workspace)?;
+        if !matches!(workspace.status, Status::Closed | Status::Crashed) {
+            return Err("Close the workspace before changing its CDP setting.".into());
+        }
+        self.db()?.execute("UPDATE workspaces SET automation_cdp=?1 WHERE id=?2 AND account_id=?3",
+            params![enabled, id, account]).map_err(db_error)?;
+        Ok(())
+    }
+
+    pub fn automation_list(&mut self, id: Option<&str>, include_cdp: bool) -> Result<Vec<serde_json::Value>, String> {
+        let account = catalog::account(self.db()?)?;
+        let mut rows = self.rows(&account, id)?;
+        self.chromium.refresh();
+        rows.retain(|row| row.trashed_at.is_none());
+        let mut results = Vec::with_capacity(rows.len());
+        for row in &mut rows {
+            self.reconcile(row)?;
+            let mut value = serde_json::json!({ "id": row.id, "name": row.name, "status": row.status,
+                "cdpOptIn": row.automation_cdp });
+            if include_cdp && row.automation_cdp && matches!(row.status, Status::Running | Status::Background) {
+                if let Some(identity) = row.identity.filter(|identity| self.debug_launches.get(&row.id) == Some(&identity.pid)
+                    && self.children.get(&row.id).is_some_and(|children| children.iter().any(|child| child.process.id() == identity.pid))) {
+                    let directory = checked_directory(self.root()?, &self.directory(&row.id)?)?;
+                    self.chromium.verified(&directory, identity)?;
+                    let active_port = directory.join("DevToolsActivePort");
+                    if fs::symlink_metadata(&active_port).is_ok_and(|meta| meta.is_file() && meta.len() <= 256) {
+                        if let Some(port) = fs::read_to_string(active_port).ok()
+                            .and_then(|text| text.lines().next()?.parse::<std::num::NonZeroU16>().ok()) {
+                            value["cdpEndpoint"] = serde_json::json!(format!("http://127.0.0.1:{port}"));
+                        }
+                    }
+                }
+            }
+            results.push(value);
+        }
+        Ok(results)
+    }
+
+    pub fn automation_perform(&mut self, id: &str, operation: Operation) -> Result<(), String> {
+        self.perform_inner(id, operation, None, true)
+    }
+
     fn record_browser(&self, id: &str, runtime: &RuntimeInfo) -> Result<(), String> {
         self.db()?.execute(
             "UPDATE workspaces SET browser_brand=?1, browser_path=?2, browser_version=?3 WHERE id=?4",
@@ -911,6 +964,10 @@ impl Manager {
         operation: Operation,
         url: Option<String>,
     ) -> Result<(), String> {
+        self.perform_inner(id, operation, url, false)
+    }
+
+    fn perform_inner(&mut self, id: &str, operation: Operation, url: Option<String>, automation: bool) -> Result<(), String> {
         let account = catalog::account(self.db()?)?;
         let mut workspace = self
             .rows(&account, Some(id))?
@@ -1001,13 +1058,30 @@ impl Manager {
                     std::slice::from_ref,
                 );
                 let extensions = if should_seed { self.approved_extensions(&account, &workspace)? } else { Vec::new() };
+                let debugging = automation && workspace.automation_cdp && !active;
+                if debugging && !runtime.bundled {
+                    return Err("CDP is available only with bundled Chromium.".into());
+                }
+                if !active {
+                    self.debug_launches.remove(id);
+                    if debugging {
+                        match fs::remove_file(directory.join("DevToolsActivePort")) {
+                            Ok(()) => (),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                            Err(_) => return Err("Could not clear the previous CDP endpoint.".into()),
+                        }
+                    }
+                }
                 let seeded = should_seed && seed_profile(&directory, &workspace.name)?;
-                let child = Chromium::launch(&runtime.path, &directory, urls, reopen, &extensions, route).map_err(|error| {
+                let child = Chromium::launch(&runtime.path, &directory, urls, reopen, &extensions, route, debugging).map_err(|error| {
                     if seeded {
                         remove_profile_seed(&directory.join("Default"));
                     }
                     error
                 })?;
+                if debugging {
+                    self.debug_launches.insert(id.into(), child.id());
+                }
                 self.children
                     .entry(id.into())
                     .or_default()

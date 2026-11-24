@@ -19,6 +19,7 @@ export const emptySettings: Settings = {
 };
 export type Workspace = {
   id: string; name: string; settings: Settings; status: Status; detail: string | null;
+  automationCdp: boolean;
   canClose: boolean; createdAt: number; trashedAt: number | null;
 };
 export type Label = { id: string; name: string };
