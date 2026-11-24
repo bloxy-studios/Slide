@@ -197,6 +197,7 @@ impl Chromium {
         reopen: bool,
         extensions: &[PathBuf],
         route: Route,
+        debugging: bool,
     ) -> Result<Child, String> {
         let mut profile = OsString::from("--user-data-dir=");
         profile.push(directory);
@@ -207,6 +208,9 @@ impl Chromium {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         route.apply(&mut command);
+        if debugging {
+            command.args(["--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0"]);
+        }
         if reopen {
             command.arg("--new-window");
             if urls.is_empty() {

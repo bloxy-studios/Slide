@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod catalog;
+mod bridge;
 mod connections;
 mod extensions;
 mod crx;
@@ -462,9 +463,21 @@ fn workspace_action(
     })
 }
 
+#[tauri::command]
+fn automation_bridge(app: tauri::AppHandle, state: State<'_, AppState>, bridge: State<'_, bridge::Bridge>,
+    action: String, port: u16) -> Result<bridge::Status, String> {
+    with_manager(state, |manager| bridge.control(app, manager, &action, port))
+}
+
+#[tauri::command]
+fn set_automation_cdp(state: State<'_, AppState>, account: String, id: String, enabled: bool) -> Result<(), String> {
+    with_manager(state, |manager| manager.set_automation_cdp(&account, &id, enabled))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(bridge::Bridge::default())
         .setup(|app| {
             let root = app.path().app_local_data_dir()?;
             let bundled = Chromium::bundled_path(&app.path().resource_dir()?);
@@ -481,6 +494,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            automation_bridge,
+            set_automation_cdp,
             seal_workspace,
             restore_workspace,
             create_workspace,

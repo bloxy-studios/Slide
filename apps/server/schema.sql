@@ -87,6 +87,26 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS audit_events_team ON audit_events(team_id, id);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS api_token_id uuid;
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id uuid PRIMARY KEY,
+  digest text NOT NULL UNIQUE,
+  team_id uuid NOT NULL,
+  account_id uuid NOT NULL,
+  name text NOT NULL,
+  scopes text[] NOT NULL,
+  expires_at timestamptz NOT NULL,
+  window_start bigint NOT NULL DEFAULT 0,
+  window_requests integer NOT NULL DEFAULT 0,
+  FOREIGN KEY (team_id,account_id) REFERENCES members(team_id,account_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS api_workspace_requests (
+  token_id uuid NOT NULL REFERENCES api_tokens(id) ON DELETE CASCADE,
+  request_key uuid NOT NULL,
+  name text NOT NULL,
+  workspace_id uuid NOT NULL,
+  PRIMARY KEY (token_id,request_key)
+);
 CREATE OR REPLACE FUNCTION slide_audit_immutable() RETURNS trigger
   LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit events are append-only'; END; $$;
 DROP TRIGGER IF EXISTS audit_immutable ON audit_events;

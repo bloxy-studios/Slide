@@ -45,6 +45,55 @@ async function scenario() {
   return { alice, bob, team, workspace, path: `/workspaces/${workspace.id}` };
 }
 
+test.skipIf(!url)("API tokens are hashed, scoped to one team, revocable, and limited atomically", async () => {
+  const { alice, bob, team, workspace } = await scenario();
+  const other = await ok("/teams", "POST", alice.token, { name: "Other team" });
+  const otherWorkspace = await ok("/workspaces", "POST", alice.token, { teamId: other.id, name: "Other workspace" });
+  const tokens = `/teams/${team.id}/tokens`;
+  const issued = await ok(tokens, "POST", alice.token, { name: "Narrow QA token", scopes: ["workspaces:read"] });
+  const [stored] = await db!`SELECT digest FROM api_tokens WHERE id=${issued.id}`;
+  expect(stored.digest).toBe(createHash("sha256").update(issued.token).digest("hex"));
+  expect((await ok(tokens, "GET", alice.token))[0].token).toBeUndefined();
+  expect(await ok("/workspaces?limit=1", "GET", issued.token)).toMatchObject({ items: [{ id: workspace.id }], next: null });
+  expect((await call("/workspaces", "POST", issued.token, { teamId: team.id, name: "Denied" })).status).toBe(403);
+  expect((await call(`/workspaces/${otherWorkspace.id}/snapshots`, "GET", issued.token)).status).toBe(404);
+  expect((await call(tokens, "POST", issued.token, { name: "Denied", scopes: ["workspaces:write"] })).status).toBe(403);
+  const member = await ok(tokens, "POST", bob.token, { name: "Member audit", scopes: ["audit:read"] });
+  expect((await call(`/teams/${team.id}/audit`, "GET", member.token)).status).toBe(403);
+  const writer = await ok(tokens, "POST", alice.token, { name: "Writer", scopes: ["workspaces:write"] });
+  const key = randomUUID();
+  const create = (name: string, requestKey = key) => api!(new Request("http://localhost/v1/workspaces", { method: "POST",
+    headers: { Authorization: "Bearer " + writer.token, "Content-Type": "application/json", "Idempotency-Key": requestKey },
+    body: JSON.stringify({ name, teamId: team.id }),
+  }));
+  const creations = await Promise.all([create("Idempotent"), create("Idempotent")]);
+  expect(creations.map(response => response.status)).toEqual([200, 200]);
+  const [first, second] = await Promise.all(creations.map(response => response.json()));
+  expect(first).toEqual(second);
+  const uppercase = await create("Idempotent", key.toUpperCase());
+  expect(uppercase.status).toBe(200);
+  expect(await uppercase.json()).toEqual(first);
+  expect((await create("Different", key.toUpperCase())).status).toBe(409);
+  expect((await create("Different")).status).toBe(409);
+  expect(await ok(`/teams/${team.id}/audit`, "GET", alice.token)).toContainEqual(expect.objectContaining({
+    apiTokenId: writer.id, subjectId: first.id, action: "workspace.create",
+  }));
+  expect(await ok("/openapi.json")).toMatchObject({ openapi: "3.1.0", paths: { "/workspaces": {
+    get: { "x-required-scope": "workspaces:read" },
+  } } });
+  const limited = createApi(db!, blobs, 90, 2);
+  const fresh = await ok(tokens, "POST", alice.token, { name: "Burst test", scopes: ["workspaces:read"] });
+  const burst = await Promise.all(Array.from({ length: 3 }, () => limited(new Request("http://localhost/v1/workspaces", {
+    headers: { Authorization: "Bearer " + fresh.token },
+  }))));
+  expect(burst.map(row => row.status).sort()).toEqual([200, 200, 429]);
+  const rejected = burst.find(row => row.status === 429)!;
+  expect(rejected.headers.get("RateLimit-Remaining")).toBe("0");
+  expect(Number(rejected.headers.get("Retry-After"))).toBeGreaterThan(0);
+  await ok(tokens + "/" + issued.id, "DELETE", alice.token);
+  expect((await call("/workspaces", "GET", issued.token)).status).toBe(401);
+});
+
 test.skipIf(!url)("invitation acceptance requires an unexpired private token, the intended account, and single use", async () => {
   const [alice, bob] = await Promise.all([account(), account()]);
   const team = await ok("/teams", "POST", alice.token, { name: "Private invitation" });

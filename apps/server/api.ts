@@ -3,15 +3,17 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isEnvelope, MAX_ENVELOPE_BYTES, SYNC_API, TEAM_ROLES, WORKSPACE_ROLES } from "../../packages/schemas/sync";
 import type { TeamRole, WorkspaceRole } from "../../packages/schemas/sync";
 import type { BlobStore } from "./storage";
+import { API_SCOPES, requiredScope } from "../../packages/schemas/public";
+import { openapi } from "./openapi";
 
-type Actor = { id: string; email: string; deviceId: string };
+type Actor = { id: string; email: string; deviceId: string; apiTeam?: string; scopes?: string[] };
 type Body = Record<string, unknown>;
 type Workspace = {
   id: string; teamId: string; ownerId: string; generation: number; fence: string;
   holderId: string | null; holderDevice: string | null; active: boolean; role: WorkspaceRole;
 };
 const origins = new Set(["tauri://localhost", "http://tauri.localhost", "http://127.0.0.1:1420", "http://localhost:1420"]);
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const exchangeEmailDigest = (address: string) => hash("exchange.email:" + address);
@@ -23,7 +25,7 @@ class Problem extends Error {
 function fail(status: number, message: string): never { throw new Problem(status, message); }
 function uuid(value: unknown): string {
   if (typeof value !== "string" || !uuidPattern.test(value)) fail(400, "Invalid identifier.");
-  return value;
+  return value.toLowerCase();
 }
 function text(value: unknown, limit: number, min = 1): string {
   if (typeof value !== "string" || value.length < min || value.length > limit || /[\u0000-\u001f\u007f]/.test(value)) {
@@ -63,7 +65,8 @@ export async function migrate(db: SQL) {
 }
 
 async function audit(db: SQL, actor: Actor, team: string, subject: string, action: string) {
-  await db`INSERT INTO audit_events (team_id,actor_id,subject_id,action) VALUES (${team},${actor.id},${subject},${action})`;
+  await db`INSERT INTO audit_events (team_id,actor_id,subject_id,action,api_token_id)
+    VALUES (${team},${actor.id},${subject},${action},${actor.apiTeam ? actor.deviceId : null})`;
 }
 
 async function teamRole(db: SQL, team: string, member: string): Promise<TeamRole | undefined> {
@@ -79,7 +82,7 @@ async function workspace(db: SQL, id: string, actor: Actor, lock = false): Promi
   const [row] = await db`SELECT id, team_id AS "teamId", owner_id AS "ownerId", generation, fence::text,
     holder_id AS "holderId", holder_device AS "holderDevice"
     FROM workspaces WHERE id=${id} ${lockClause}`;
-  if (!row || !await teamRole(db, row.teamId, actor.id)) fail(404, "Workspace unavailable.");
+  if (!row || (actor.apiTeam && actor.apiTeam !== row.teamId) || !await teamRole(db, row.teamId, actor.id)) fail(404, "Workspace unavailable.");
   const [grant] = await db`SELECT role FROM grants WHERE workspace_id=${id} AND account_id=${actor.id}`;
   const role = row.ownerId === actor.id ? "owner" : grant?.role;
   if (!role) fail(404, "Workspace unavailable.");
@@ -98,11 +101,31 @@ function requireGeneration(row: Workspace, input: Body) {
 }
 const revisionFields = (db: SQL) => db`version, sha256, size, created_at AS "createdAt", restored_from AS "restoredFrom"`;
 
-export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
-  async function dispatch(request: Request): Promise<unknown> {
-    const path = new URL(request.url).pathname;
+export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90, apiRateLimit = 120) {
+  async function apiActor(token: string, headers: Record<string, string>): Promise<Actor> {
+    const now = Math.floor(Date.now() / 1000);
+    const window = now - now % 60;
+    const [row] = await db`UPDATE api_tokens t SET window_requests=
+        CASE WHEN t.window_start=${window} THEN t.window_requests+1 ELSE 1 END, window_start=${window}
+      FROM accounts a WHERE t.digest=${hash(token)} AND t.account_id=a.id AND t.expires_at > clock_timestamp()
+      RETURNING a.id,a.email,t.id AS "deviceId",t.team_id AS "apiTeam",t.scopes,t.window_requests`;
+    if (!row) fail(401, "API token invalid, expired or revoked.");
+    headers["RateLimit-Limit"] = String(apiRateLimit);
+    headers["RateLimit-Remaining"] = String(Math.max(0, apiRateLimit - row.window_requests));
+    headers["RateLimit-Reset"] = String(window + 60 - now);
+    if (row.window_requests > apiRateLimit) {
+      headers["Retry-After"] = headers["RateLimit-Reset"];
+      fail(429, "API token rate limit exceeded.");
+    }
+    return row;
+  }
+
+  async function dispatch(request: Request, headers: Record<string, string>): Promise<unknown> {
+    const url = new URL(request.url);
+    const path = url.pathname;
     const method = request.method;
     if (path === "/health" && method === "GET") return { status: "ok" };
+    if (path === SYNC_API + "/openapi.json" && method === "GET") return openapi;
     if (!path.startsWith(SYNC_API + "/")) fail(404, "Unknown endpoint.");
     const [resource, id, action, sub, ...rest] = path.slice(SYNC_API.length + 1).split("/");
     if (rest.length) fail(404, "Unknown endpoint.");
@@ -127,17 +150,24 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
       return { token, account: { id: user.id, email: user.email } };
     }
     const token = request.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
-    if (!tokenPattern.test(token)) fail(401, "Sign in first.");
-    const [actor] = await db`SELECT a.id,a.email,s.device_id AS "deviceId" FROM sessions s JOIN accounts a ON a.id=s.account_id
-      WHERE s.digest=${hash(token)} AND s.expires_at > clock_timestamp()` as Actor[];
+    const isApiToken = token.startsWith("sw_") && tokenPattern.test(token.slice(3));
+    if (!isApiToken && !tokenPattern.test(token)) fail(401, "Sign in first.");
+    const actor = isApiToken ? await apiActor(token, headers) : (await db`SELECT a.id,a.email,s.device_id AS "deviceId" FROM sessions s JOIN accounts a ON a.id=s.account_id
+      WHERE s.digest=${hash(token)} AND s.expires_at > clock_timestamp()` as Actor[])[0];
     if (!actor) fail(401, "Session expired. Sign in again.");
+    if (actor.apiTeam) {
+      const scope = requiredScope(method, resource, id, action, sub);
+      if (!scope || !actor.scopes?.includes(scope)) fail(403, "API token scope does not allow this operation.");
+      if (resource === "teams" && id && uuid(id) !== actor.apiTeam) fail(404, "Team unavailable.");
+    }
     if (resource === "sessions" && id === "current" && !action && method === "DELETE") {
       await db`DELETE FROM sessions WHERE digest=${hash(token)}`;
       return { signedOut: true };
     }
     if (resource === "teams" && !id && method === "GET") {
       return await db`SELECT t.id,t.name,m.role FROM teams t JOIN members m ON t.id=m.team_id
-        WHERE m.account_id=${actor.id} ORDER BY t.name,t.id LIMIT 100`;
+        WHERE m.account_id=${actor.id} AND (${actor.apiTeam ?? null}::uuid IS NULL OR t.id=${actor.apiTeam ?? null})
+        ORDER BY t.name,t.id LIMIT 100`;
     }
     if (resource === "teams" && !id && method === "POST") {
       const name = text((await body(request)).name, 100);
@@ -168,6 +198,36 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
     }
     if (resource === "teams" && id && action) {
       const team = uuid(id);
+      if (action === "tokens" && !actor.apiTeam) {
+        return db.begin(async tx => {
+          if (!await teamRole(tx, team, actor.id)) fail(404, "Team unavailable.");
+          if (!sub && method === "GET") return await tx`SELECT id,name,scopes,expires_at AS "expiresAt"
+            FROM api_tokens WHERE team_id=${team} AND account_id=${actor.id} ORDER BY name,id LIMIT 100`;
+          if (!sub && method === "POST") {
+            const data = await body(request);
+            const name = text(data.name, 100);
+            if (!Array.isArray(data.scopes) || data.scopes.length < 1 || data.scopes.length > API_SCOPES.length)
+              fail(400, "Select valid API scopes.");
+            const scopes = [...new Set(data.scopes.map(scope => option(scope, API_SCOPES)))];
+            const days = data.expiresInDays === undefined ? 30 : integer(data.expiresInDays, 1, 90);
+            const secretToken = "sw_" + secret(), tokenId = randomUUID();
+            const [created] = await tx`INSERT INTO api_tokens (id,digest,team_id,account_id,name,scopes,expires_at)
+              VALUES (${tokenId},${hash(secretToken)},${team},${actor.id},${name},
+                string_to_array(${scopes.join(",")}::text, ','),
+                clock_timestamp() + ${days} * interval '1 day') RETURNING id,name,scopes,expires_at AS "expiresAt"`;
+            await audit(tx, actor, team, tokenId, "api_token.create");
+            return { ...created, token: secretToken };
+          }
+          if (sub && method === "DELETE") {
+            const [removed] = await tx`DELETE FROM api_tokens WHERE id=${uuid(sub)} AND team_id=${team}
+              AND account_id=${actor.id} RETURNING id`;
+            if (!removed) fail(404, "API token unavailable.");
+            await audit(tx, actor, team, removed.id, "api_token.revoke");
+            return { revoked: true };
+          }
+          fail(404, "Unknown endpoint.");
+        });
+      }
       if (action === "members" && !sub && method === "GET") {
         return db.begin(async tx => {
           if (!await teamRole(tx, team, actor.id)) fail(404, "Team unavailable.");
@@ -221,12 +281,24 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
       if (action === "audit" && !sub && method === "GET") {
         return db.begin(async tx => {
           requireAdmin(await teamRole(tx, team, actor.id));
-          return await tx`SELECT id::text,actor_id AS "actorId",subject_id AS "subjectId",action,created_at AS "createdAt"
+          return await tx`SELECT id::text,actor_id AS "actorId",api_token_id AS "apiTokenId",subject_id AS "subjectId",action,created_at AS "createdAt"
             FROM audit_events WHERE team_id=${team} ORDER BY id DESC LIMIT 100`;
         });
       }
     }
     if (resource === "workspaces" && !id && method === "GET") {
+      if (actor.apiTeam) {
+        const after = url.searchParams.has("after") ? uuid(url.searchParams.get("after")) : null;
+        const limit = url.searchParams.has("limit") ? integer(Number(url.searchParams.get("limit")), 1, 100) : 50;
+        const rows = await db`SELECT w.id,w.team_id AS "teamId",w.name,w.generation,
+          CASE WHEN w.owner_id=${actor.id} THEN 'owner' ELSE g.role END AS role FROM workspaces w
+          JOIN members m ON m.team_id=w.team_id AND m.account_id=${actor.id}
+          LEFT JOIN grants g ON g.workspace_id=w.id AND g.account_id=${actor.id}
+          WHERE w.team_id=${actor.apiTeam} AND (w.owner_id=${actor.id} OR g.role IS NOT NULL)
+            AND (${after}::uuid IS NULL OR w.id > ${after}::uuid) ORDER BY w.id LIMIT ${limit + 1}`;
+        const items = rows.slice(0, limit);
+        return { items, next: rows.length > limit ? items.at(-1)?.id : null };
+      }
       return await db`SELECT w.id,w.team_id AS "teamId",w.name,w.generation,
         CASE WHEN w.owner_id=${actor.id} THEN 'owner' ELSE g.role END AS role FROM workspaces w
         JOIN members m ON m.team_id=w.team_id AND m.account_id=${actor.id}
@@ -236,9 +308,21 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
     if (resource === "workspaces" && !id && method === "POST") {
       const data = await body(request);
       const team = uuid(data.teamId), name = text(data.name, 100);
+      if (actor.apiTeam && team !== actor.apiTeam) fail(404, "Team unavailable.");
+      const key = actor.apiTeam ? uuid(request.headers.get("Idempotency-Key")) : null;
       return db.begin(async tx => {
         if (!await teamRole(tx, team, actor.id)) fail(403, "Team membership required.");
         const workspaceId = randomUUID();
+        if (key) {
+          const [reservation] = await tx`INSERT INTO api_workspace_requests VALUES (${actor.deviceId},${key},${name},${workspaceId})
+            ON CONFLICT DO NOTHING RETURNING workspace_id`;
+          if (!reservation) {
+            const [previous] = await tx`SELECT name,workspace_id FROM api_workspace_requests
+              WHERE token_id=${actor.deviceId} AND request_key=${key}`;
+            if (previous.name !== name) fail(409, "Idempotency key already used for another workspace creation.");
+            return { id: previous.workspace_id, teamId: team, name, generation: 0, role: "owner" };
+          }
+        }
         await tx`INSERT INTO workspaces (id,team_id,owner_id,name) VALUES (${workspaceId},${team},${actor.id},${name})`;
         await audit(tx, actor, team, workspaceId, "workspace.create");
         return { id: workspaceId, teamId: team, name, generation: 0, role: "owner" };
@@ -423,12 +507,13 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
     if (origin) {
       if (!origins.has(origin)) return Response.json({ error: "Origin not allowed." }, { status: 403, headers });
       headers["Access-Control-Allow-Origin"] = origin;
-      headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type";
+      headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Idempotency-Key";
+      headers["Access-Control-Expose-Headers"] = "RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After";
       headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
     }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
     try {
-      return Response.json(await dispatch(request), { headers });
+      return Response.json(await dispatch(request, headers), { headers });
     } catch (error) {
       if (error instanceof Problem) return Response.json({ error: error.message }, { status: error.status, headers });
       console.error("Slide API operation failed", error instanceof Error ? error.name : "Unexpected error");
