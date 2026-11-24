@@ -154,23 +154,34 @@ fn token_matches(token: &str, digest: Option<&[u8]>) -> bool {
     digest.is_some_and(|digest| hmac::verify(&key(), token.as_bytes(), digest).is_ok())
 }
 
-fn process(app: &AppHandle, stream: &mut TcpStream, peer: SocketAddr, port: u16, stop: &AtomicBool) -> (u16, Value) {
-    let failure = |code, message: &str| (code, json!({ "error": message }));
+fn read_request(stream: &mut TcpStream) -> Result<String, Failure> {
     let deadline = Instant::now() + Duration::from_secs(1);
+    stream.set_nonblocking(false).map_err(|_| (503, "Could not configure bridge connection."))?;
     let mut request = Vec::new();
     let mut buffer = [0u8; 1024];
     while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { return failure(400, "Request timed out."); };
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { return Err((400, "Request timed out.")); };
         if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
-            return failure(400, "Request timed out.");
+            return Err((400, "Request timed out."));
         }
         match stream.read(&mut buffer) {
             Ok(count) if count > 0 && request.len() + count <= 8192 => request.extend_from_slice(&buffer[..count]),
-            _ => return failure(400, "Invalid request."),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+                return Err((400, "Request timed out.")),
+            _ => return Err((400, "Invalid request.")),
         }
     }
-    let Ok(request) = std::str::from_utf8(&request) else { return failure(400, "Invalid request."); };
-    let (token, action) = match authorize(peer, port, request) {
+    String::from_utf8(request).map_err(|_| (400, "Invalid request."))
+}
+
+fn process(app: &AppHandle, stream: &mut TcpStream, peer: SocketAddr, port: u16, stop: &AtomicBool) -> (u16, Value) {
+    let failure = |code, message: &str| (code, json!({ "error": message }));
+    let request = match read_request(stream) {
+        Ok(request) => request,
+        Err((code, message)) => return failure(code, message),
+    };
+    let (token, action) = match authorize(peer, port, &request) {
         Ok(parsed) => parsed,
         Err((code, message)) => return failure(code, message),
     };
@@ -268,6 +279,29 @@ mod tests {
         drop((idle, ready));
         server.join().unwrap();
         served_before_release.unwrap();
+    }
+
+    #[test]
+    fn bridge_reads_headers_split_across_delayed_writes() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(b"GET /v1/workspaces HTTP/1.1\r\n").unwrap();
+        let (mut stream, peer) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (reading, started) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            reading.send(()).unwrap();
+            read_request(&mut stream)
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        std::thread::sleep(Duration::from_millis(75));
+        let token = "A".repeat(43);
+        write!(client, "Host: {address}\r\nAuthorization: Bearer {token}\r\n\r\n").unwrap();
+        let request = server.join().unwrap().unwrap();
+        let (supplied, action) = authorize(peer, address.port(), &request).unwrap();
+        assert_eq!(supplied, token);
+        assert!(matches!(action, Action::List));
     }
 
     #[test]
