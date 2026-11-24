@@ -52,6 +52,14 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
       {catalog.connections.map(connection => <option key={connection.id} value={connection.id}>{connection.name} (required)</option>)}
     </select></label>
     {value.connection.mode === "workspace" && <label>Required HTTP proxy endpoint<input required
+      onInvalid={event => {
+        const field = event.currentTarget;
+        const section = field.closest("details");
+        if (section && !section.open) {
+          section.open = true;
+          field.focus();
+        }
+      }}
       value={value.connection.endpoint} onChange={e => set({ connection: { mode: "workspace", endpoint: e.target.value } })}
       placeholder="http://127.0.0.1:4312" /></label>}
     </details>
