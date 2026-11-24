@@ -79,7 +79,7 @@ function App() {
   const account = data?.catalog.activeAccount;
   useEffect(() => {
     setSelection([]); setPage(0); setPreview(undefined); setImportSelection([]);
-    setOutcomes([]); setExtensionProfile("");
+    setOutcomes([]); setExtensionProfile(""); setBatchValue("");
   }, [account]);
 
   const showSearch = useEffectEvent(() => {
