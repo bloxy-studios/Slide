@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Slide Workspaces",
+  "version": "0.1.0",
+  "identifier": "com.bloxystudios.slide-workspaces",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      { "title": "Slide Workspaces", "width": 1000, "height": 710, "minWidth": 700, "minHeight": 500 }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self'; img-src 'self' data:",
+      "capabilities": [{
+        "identifier": "manager",
+        "windows": ["main"],
+        "permissions": ["core:default", "dialog:allow-open"]
+      }]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.icns", "icons/icon.ico"]
+  }
+}
