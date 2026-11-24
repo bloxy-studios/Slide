@@ -120,7 +120,15 @@ struct Transition {
 struct Catalog {
     root: PathBuf,
     db: Connection,
-    _lock: File,
+    _lock: CatalogLock,
+}
+
+struct CatalogLock(File);
+
+impl Drop for CatalogLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
 }
 
 pub struct Manager {
@@ -152,6 +160,7 @@ impl Manager {
             .open(root.join("manager.lock"))
             .map_err(|e| format!("Could not open the manager lock: {e}"))?;
         FileExt::try_lock_exclusive(&lock).map_err(|_| "Another Slide Workspaces manager is already using this catalog. Quit it, then restart this window.")?;
+        let lock = CatalogLock(lock);
         let mut db = Connection::open(root.join("catalog.sqlite3")).map_err(db_error)?;
         db.pragma_update(None, "foreign_keys", true)
             .map_err(db_error)?;
@@ -1795,6 +1804,20 @@ mod tests {
         assert_eq!(snapshot.workspaces[1].name, "Viewer");
         assert_eq!(snapshot.workspaces[1].status, Status::Closed);
         assert_ne!(snapshot.workspaces[0].id, snapshot.workspaces[1].id);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn catalog_releases_lock_even_with_a_duplicated_descriptor() {
+        let test = tempfile::tempdir().unwrap();
+        let manager = Manager::new(test.path().into()).unwrap();
+        let duplicated = manager.catalog().unwrap()._lock.0.try_clone().unwrap();
+        assert!(Manager::new(test.path().into()).is_err());
+        drop(manager);
+        let reopened = Manager::new(test.path().into()).unwrap();
+        drop(duplicated);
+        assert!(Manager::new(test.path().into()).is_err());
+        drop(reopened);
     }
 
     #[test]
