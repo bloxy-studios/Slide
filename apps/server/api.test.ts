@@ -32,8 +32,7 @@ async function ok(path: string, method = "GET", token?: string, data?: unknown) 
   if (result.status !== 200) throw new Error(`${method} ${path}: HTTP ${result.status}: ${result.data.error}`);
   return result.data;
 }
-async function account() {
-  const email = `${randomUUID()}@slide.test`;
+async function account(email = `${randomUUID()}@slide.test`) {
   await ok("/accounts", "POST", undefined, { email, password });
   return ok("/sessions", "POST", undefined, { email, password, deviceId: randomUUID() });
 }
@@ -186,10 +185,17 @@ test.skipIf(!url)("encrypted handoff verifies bytes, retains versions, and fence
   expect(race.map(reply => reply.status).sort()).toEqual([200, 404]);
   const external = await account();
   const destination = await ok("/teams", "POST", external.token, { name: "Destination team" });
-  expect((await call(path + "/exchange", "POST", alice.token, { email: "missing@slide.test", version: 1 })).status).toBe(400);
+  const unregistered = `${randomUUID()}@slide.test`;
+  const missingInvite = await ok(path + "/exchange", "POST", alice.token, { email: unregistered, version: 1 });
   expect((await call(path + "/exchange", "POST", alice.token, { email: external.account.email, accountId: external.account.id, version: 1 })).status).toBe(400);
   const externalInvite = await ok(path + "/exchange", "POST", alice.token, { email: external.account.email.toUpperCase(), version: 1 });
+  expect(missingInvite).toEqual({ ticket: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), expiresAt: expect.any(String) });
+  expect(Object.keys(missingInvite)).toEqual(Object.keys(externalInvite));
+  expect((await call("/exchange/redeem", "POST", external.token, { ticket: missingInvite.ticket, teamId: destination.id })).status).toBe(404);
   expect((await ok("/exchange/redeem", "POST", external.token, { ticket: externalInvite.ticket, teamId: destination.id })).teamId).toBe(destination.id);
+  const newRecipient = await account(unregistered);
+  const newTeam = await ok("/teams", "POST", newRecipient.token, { name: "New recipient team" });
+  expect((await ok("/exchange/redeem", "POST", newRecipient.token, { ticket: missingInvite.ticket, teamId: newTeam.id })).teamId).toBe(newTeam.id);
   await ok(path + "/transfer", "POST", alice.token, { accountId: bob.account.id });
   expect((await call(path + "/snapshots/1", "GET", alice.token)).status).toBe(404);
   const c = await ok(path + "/lease", "POST", bob.token, { operation: "acquire" });

@@ -14,6 +14,7 @@ const origins = new Set(["tauri://localhost", "http://tauri.localhost", "http://
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+const exchangeEmailDigest = (address: string) => hash("exchange.email:" + address);
 const secret = () => randomBytes(32).toString("base64url");
 
 class Problem extends Error {
@@ -254,7 +255,8 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
       return db.begin(async tx => {
         if (!await teamRole(tx, team, actor.id)) fail(403, "Destination team membership required.");
         const [ticket] = await tx`UPDATE exchange_tickets SET redeemed_at=clock_timestamp()
-          WHERE digest=${digest} AND recipient_id=${actor.id} AND redeemed_at IS NULL AND expires_at > clock_timestamp()
+          WHERE digest=${digest} AND (recipient_id=${actor.id} OR recipient_email_digest=${exchangeEmailDigest(actor.email)})
+            AND redeemed_at IS NULL AND expires_at > clock_timestamp()
           RETURNING workspace_id,version`;
         if (!ticket) fail(404, "Exchange ticket unavailable or already used.");
         const [source] = await tx`SELECT w.name,w.team_id,r.blob_key,r.sha256,r.size FROM workspaces w
@@ -392,13 +394,18 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
           if ((data.email === undefined) === (data.accountId === undefined)) fail(400, "Provide one recipient email or account ID.");
           const version = integer(data.version, 1, row.generation);
           const ttl = data.expiresIn === undefined ? 900 : integer(data.expiresIn, 1, 3600);
-          const [account] = data.email === undefined
-            ? await tx`SELECT id FROM accounts WHERE id=${uuid(data.accountId)}`
-            : await tx`SELECT id FROM accounts WHERE email=${email(data.email)}`;
-          if (!account || account.id === actor.id) fail(400, "Choose a different existing account.");
+          let recipientId = null;
+          let recipientEmailDigest = null;
+          if (data.email !== undefined) {
+            recipientEmailDigest = exchangeEmailDigest(email(data.email));
+          } else {
+            const [account] = await tx`SELECT id FROM accounts WHERE id=${uuid(data.accountId)}`;
+            if (!account || account.id === actor.id) fail(400, "Choose a different existing account.");
+            recipientId = account.id;
+          }
           const ticket = secret();
-          const [issued] = await tx`INSERT INTO exchange_tickets (digest,workspace_id,version,recipient_id,expires_at)
-            VALUES (${hash(ticket)},${id},${version},${account.id},clock_timestamp() + ${ttl} * interval '1 second')
+          const [issued] = await tx`INSERT INTO exchange_tickets (digest,workspace_id,version,recipient_id,recipient_email_digest,expires_at)
+            VALUES (${hash(ticket)},${id},${version},${recipientId},${recipientEmailDigest},clock_timestamp() + ${ttl} * interval '1 second')
             RETURNING expires_at AS "expiresAt"`;
           await audit(tx, actor, row.teamId, id, "exchange.issue");
           return { ticket, expiresAt: issued.expiresAt };

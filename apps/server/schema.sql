@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS exchange_tickets (
   redeemed_at timestamptz,
   FOREIGN KEY (workspace_id, version) REFERENCES revisions(workspace_id, version)
 );
+ALTER TABLE exchange_tickets ADD COLUMN IF NOT EXISTS recipient_email_digest text;
+ALTER TABLE exchange_tickets ALTER COLUMN recipient_id DROP NOT NULL;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_constraint WHERE conrelid='exchange_tickets'::regclass AND conname='exchange_ticket_recipient') THEN
+    ALTER TABLE exchange_tickets ADD CONSTRAINT exchange_ticket_recipient
+      CHECK (num_nonnulls(recipient_id, recipient_email_digest) = 1);
+  END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS audit_events (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   team_id uuid NOT NULL REFERENCES teams(id),
