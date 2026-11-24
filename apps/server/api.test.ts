@@ -42,9 +42,25 @@ async function scenario() {
   const team = await ok("/teams", "POST", alice.token, { name: "Fixture team" });
   const workspace = await ok("/workspaces", "POST", alice.token, { teamId: team.id, name: "Fixture workspace" });
   const invite = await ok(`/teams/${team.id}/invitations`, "POST", alice.token, { email: bob.account.email, role: "member" });
-  await ok(`/invitations/${invite.id}/accept`, "POST", bob.token, {});
+  await ok("/invitations/accept", "POST", bob.token, { token: invite.token });
   return { alice, bob, team, workspace, path: `/workspaces/${workspace.id}` };
 }
+
+test.skipIf(!url)("invitation acceptance requires an unexpired private token, the intended account, and single use", async () => {
+  const [alice, bob] = await Promise.all([account(), account()]);
+  const team = await ok("/teams", "POST", alice.token, { name: "Private invitation" });
+  const issue = () => ok(`/teams/${team.id}/invitations`, "POST", alice.token, { email: bob.account.email, role: "member" });
+  const accept = (auth: string, token?: string) => call("/invitations/accept", "POST", auth, { token });
+  const invite = await issue();
+  expect((await accept(bob.token)).status).toBe(400);
+  expect((await accept(bob.token, randomBytes(32).toString("base64url"))).status).toBe(404);
+  expect((await accept(alice.token, invite.token)).status).toBe(404);
+  expect(await ok("/teams", "GET", bob.token)).toEqual([]);
+  const expired = await issue();
+  await db!`UPDATE invitations SET expires_at=clock_timestamp() - interval '1 second' WHERE id=${expired.id}`;
+  expect((await accept(bob.token, expired.token)).status).toBe(404);
+  expect((await Promise.all([accept(bob.token, invite.token), accept(bob.token, invite.token)])).map(reply => reply.status).sort()).toEqual([200, 404]);
+});
 
 test.skipIf(!url)("server enforces workspace grants, invitation roles, session revocation and audit access", async () => {
   const { alice, bob, team, path } = await scenario();

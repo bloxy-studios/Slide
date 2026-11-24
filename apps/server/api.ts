@@ -148,17 +148,15 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
         return { id: team, name, role: "owner" };
       });
     }
-    if (resource === "invitations" && !id && method === "GET") {
-      return await db`SELECT i.id,t.name,i.role,i.expires_at AS "expiresAt" FROM invitations i JOIN teams t ON t.id=i.team_id
-        WHERE i.email=${actor.email} AND i.expires_at > clock_timestamp() ORDER BY i.expires_at LIMIT 100`;
-    }
-    if (resource === "invitations" && id && action === "accept" && !sub && method === "POST") {
+    if (resource === "invitations" && id === "accept" && !action && method === "POST") {
+      const invitationToken = (await body(request)).token;
+      if (typeof invitationToken !== "string" || !tokenPattern.test(invitationToken)) fail(400, "Invalid invitation token.");
       return db.begin(async tx => {
-        const [invite] = await tx`DELETE FROM invitations WHERE id=${uuid(id)} AND email=${actor.email}
-          AND expires_at > clock_timestamp() RETURNING team_id,role`;
+        const [invite] = await tx`DELETE FROM invitations WHERE token_digest=${hash(invitationToken)} AND email=${actor.email}
+          AND expires_at > clock_timestamp() RETURNING id,team_id,role`;
         if (!invite) fail(404, "Invitation unavailable.");
         await tx`INSERT INTO members VALUES (${invite.team_id},${actor.id},${invite.role}) ON CONFLICT DO NOTHING`;
-        await audit(tx, actor, invite.team_id, id, "invitation.accept");
+        await audit(tx, actor, invite.team_id, invite.id, "invitation.accept");
         return { teamId: invite.team_id };
       });
     }
@@ -194,10 +192,11 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
           const role = await teamRole(tx, team, actor.id);
           requireAdmin(role);
           if (inviteRole === "admin" && role !== "owner") fail(403, "Only the team owner can invite an administrator.");
-          const invite = randomUUID();
-          await tx`INSERT INTO invitations VALUES (${invite},${team},${address},${inviteRole},clock_timestamp() + interval '24 hours')`;
+          const invite = randomUUID(), invitationToken = secret();
+          await tx`INSERT INTO invitations (id,team_id,email,role,expires_at,token_digest)
+            VALUES (${invite},${team},${address},${inviteRole},clock_timestamp() + interval '24 hours',${hash(invitationToken)})`;
           await audit(tx, actor, team, invite, "invitation.create");
-          return { id: invite };
+          return { id: invite, token: invitationToken };
         });
       }
       if (action === "invitations" && sub && method === "DELETE") {

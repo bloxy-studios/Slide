@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS invitations (
   role text NOT NULL CHECK (role IN ('admin', 'member')),
   expires_at timestamptz NOT NULL
 );
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS token_digest text;
+DELETE FROM invitations WHERE token_digest IS NULL;
+ALTER TABLE invitations ALTER COLUMN token_digest SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS invitations_token_digest ON invitations(token_digest);
 CREATE TABLE IF NOT EXISTS workspaces (
   id uuid PRIMARY KEY,
   team_id uuid NOT NULL REFERENCES teams(id),

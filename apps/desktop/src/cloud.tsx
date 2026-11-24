@@ -7,7 +7,6 @@ import type { Workspace } from "./catalog";
 type Account = { id: string; email: string };
 type Session = { token: string; account: Account };
 type Team = { id: string; name: string; role: TeamRole };
-type Invitation = { id: string; name: string; role: TeamRole };
 type LeaseState = { lease: Lease | null; heldByThisDevice?: boolean; generation: number };
 type Sealed = { envelope: Envelope; sha256: string };
 type Upload = Sealed & { path: string; requestId: string; fence: string; generation: number };
@@ -51,7 +50,8 @@ export function Cloud({ account, workspaces, refresh }: {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [teams, setTeams] = useState<Team[]>([]);
-  const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [inviteToken, setInviteToken] = useState("");
+  const [issuedInvitation, setIssuedInvitation] = useState("");
   const [remote, setRemote] = useState<RemoteWorkspace[]>([]);
   const [teamId, setTeamId] = useState("");
   const [teamName, setTeamName] = useState("");
@@ -82,10 +82,10 @@ export function Cloud({ account, workspaces, refresh }: {
   }
 
   async function lists(auth: string) {
-    const [nextTeams, nextInvitations, nextRemote] = await Promise.all([
-      api<Team[]>("/teams", auth), api<Invitation[]>("/invitations", auth), api<RemoteWorkspace[]>("/workspaces", auth),
+    const [nextTeams, nextRemote] = await Promise.all([
+      api<Team[]>("/teams", auth), api<RemoteWorkspace[]>("/workspaces", auth),
     ]);
-    setTeams(nextTeams); setInvitations(nextInvitations); setRemote(nextRemote);
+    setTeams(nextTeams); setRemote(nextRemote);
     setTeamId(current => nextTeams.some(team => team.id === current) ? current : nextTeams[0]?.id ?? "");
     setWorkspaceId(current => nextRemote.some(row => row.id === current) ? current : "");
   }
@@ -201,13 +201,15 @@ export function Cloud({ account, workspaces, refresh }: {
         <button disabled={busy} onClick={() => void run(async () => {
           try { if (fence) await leaseAction("release"); } catch { /* The lease expires without renewal. */ }
           try { await api("/sessions/current", session.token, "DELETE"); }
-          finally { setSession(undefined); setPassphrase(""); setPendingUpload(undefined); setTicket(""); }
+          finally { setSession(undefined); setPassphrase(""); setPendingUpload(undefined); setTicket(""); setInviteToken(""); setIssuedInvitation(""); }
         })}>Sign out</button>
       </div>
-      {invitations.map(invite => <p key={invite.id}>{invite.name} · {invite.role} <button disabled={busy} onClick={() => void run(async () => {
-        await api(`/invitations/${invite.id}/accept`, session.token, "POST", {}); await lists(session.token);
-      })}>Accept invitation</button></p>)}
       <div className="form-grid">
+        <label>Private invitation token<input type="password" autoComplete="off" value={inviteToken} onChange={e => setInviteToken(e.target.value)} /></label>
+        <button disabled={busy || !inviteToken.trim()} onClick={() => void run(async () => {
+          await api("/invitations/accept", session.token, "POST", { token: inviteToken.trim() });
+          setInviteToken(""); await lists(session.token); setNotice("Invitation accepted.");
+        })}>Accept invitation</button>
         <label>New team name<input value={teamName} maxLength={100} onChange={e => setTeamName(e.target.value)} /></label>
         <button disabled={busy || !teamName.trim()} onClick={() => void run(async () => {
           const team = await api<Team>("/teams", session.token, "POST", { name: teamName.trim() });
@@ -219,8 +221,8 @@ export function Cloud({ account, workspaces, refresh }: {
         {selectedTeam && selectedTeam.role !== "member" && <>
           <label>Invite email<input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} /></label>
           <button disabled={busy || !inviteEmail} onClick={() => void run(async () => {
-            await api(`/teams/${teamId}/invitations`, session.token, "POST", { email: inviteEmail, role: "member" });
-            setInviteEmail(""); setNotice("Invitation issued.");
+            const invite = await api<{ token: string }>(`/teams/${teamId}/invitations`, session.token, "POST", { email: inviteEmail, role: "member" });
+            setIssuedInvitation(invite.token); setInviteEmail(""); setNotice("Invitation issued.");
           })}>Invite member</button>
         </>}
         <label>New shared workspace name<input value={remoteName} maxLength={100} onChange={e => setRemoteName(e.target.value)} /></label>
@@ -234,6 +236,7 @@ export function Cloud({ account, workspaces, refresh }: {
           {remote.map(row => <option key={row.id} value={row.id}>{row.name} · {row.role}</option>)}
         </select></label>
       </div>
+      {issuedInvitation && <p>Single-use invitation token: <code>{issuedInvitation}</code>. Share it privately with the intended recipient. <button onClick={() => setIssuedInvitation("")}>Hide token</button></p>}
       {workspace && <>
         <h3>{workspace.name} · {workspace.role}</h3>
         <p>{lease ? lease.lease ? `Lease ${fence ? "held by this device" : "held by another device"} · fence ${lease.lease.fence} · expires ${new Date(lease.lease.expiresAt).toLocaleTimeString()}` : "No active lease." : "Lease status not loaded."} Latest revision: {lease?.generation ?? workspace.generation}.</p>
