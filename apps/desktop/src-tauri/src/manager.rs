@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
+    io::Read,
     path::{Path, PathBuf},
     process::Child,
     time::{Duration, Instant},
@@ -16,6 +17,7 @@ use url::Url;
 use uuid::Uuid;
 
 const TRANSITION_TIMEOUT: Duration = Duration::from_secs(12);
+const MAX_PROFILE_SEED_BYTES: u64 = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -697,7 +699,7 @@ impl Manager {
                 .or_else(|| Chromium::discover_matching(|runtime| browser.accepts(runtime)))
                 .ok_or_else(|| browser.unavailable());
         }
-        if !profile_directory_is_empty(directory)? {
+        if !profile_is_fresh(directory)? {
             return Err("This existing profile predates browser tracking. Slide cannot verify its browser and will not risk its saved sessions. Keep the original profile and clone its settings into a new workspace, or restore a pre-upgrade backup with the original Slide and browser.".into());
         }
         selected
@@ -871,11 +873,49 @@ fn prepare_directory(root: &Path, directory: &Path) -> Result<PathBuf, String> {
     checked_directory(root, directory)
 }
 
-fn profile_directory_is_empty(directory: &Path) -> Result<bool, String> {
-    fs::read_dir(directory)
-        .and_then(|mut entries| entries.next().transpose())
-        .map(|entry| entry.is_none())
-        .map_err(|error| format!("Could not inspect the workspace directory: {error}"))
+fn profile_is_fresh(directory: &Path) -> Result<bool, String> {
+    let inspect = || -> std::io::Result<bool> {
+        let mut root = fs::read_dir(directory)?;
+        let Some(profile) = root.next().transpose()? else {
+            return Ok(true);
+        };
+        if profile.file_name() != "Default"
+            || !profile.file_type()?.is_dir()
+            || root.next().transpose()?.is_some()
+        {
+            return Ok(false);
+        }
+        let mut defaults = fs::read_dir(profile.path())?;
+        let Some(preferences) = defaults.next().transpose()? else {
+            return Ok(false);
+        };
+        if preferences.file_name() != "Preferences"
+            || !preferences.file_type()?.is_file()
+            || defaults.next().transpose()?.is_some()
+        {
+            return Ok(false);
+        }
+
+        let mut bytes = Vec::new();
+        File::open(preferences.path())?
+            .take(MAX_PROFILE_SEED_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_PROFILE_SEED_BYTES {
+            return Ok(false);
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Ok(false);
+        };
+        let Some(name) = value["profile"]["name"].as_str() else {
+            return Ok(false);
+        };
+        Ok(bytes == profile_seed(name).to_string().as_bytes())
+    };
+    inspect().map_err(|error| format!("Could not inspect the workspace directory: {error}"))
+}
+
+fn profile_seed(name: &str) -> serde_json::Value {
+    serde_json::json!({ "profile": { "name": name } })
 }
 
 fn seed_profile(directory: &Path, name: &str) -> Result<bool, String> {
@@ -886,9 +926,8 @@ fn seed_profile(directory: &Path, name: &str) -> Result<bool, String> {
         let profile = directory.join("Default");
         fs::create_dir(&profile)?;
         let result = (|| -> std::io::Result<()> {
-            let settings = serde_json::json!({ "profile": { "name": name } });
             let file = OpenOptions::new().write(true).create_new(true).open(profile.join("Preferences"))?;
-            serde_json::to_writer(file, &settings)?;
+            serde_json::to_writer(file, &profile_seed(name))?;
             Ok(())
         })();
         if result.is_err() {
@@ -1074,10 +1113,35 @@ mod tests {
         fs::rename(&removed, &previous).unwrap();
         let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
         let directory = manager.directory(&id).unwrap();
-        assert!(profile_directory_is_empty(&directory).unwrap());
+        assert!(fs::read_dir(&directory).unwrap().next().is_none());
         let recovered = manager.profile_runtime(&workspace, &directory).unwrap();
         assert_eq!(recovered.version, runtime.version);
         assert_eq!(recovered.path, runtime.path);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn untracked_seed_only_profile_can_retry_but_browser_state_blocks_it() {
+        let test = tempfile::tempdir().unwrap();
+        let bundled = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", "160.0.8182.0");
+        let manager = Manager::with_bundle(test.path().into(), Some(bundled)).unwrap();
+        let id = insert_workspace(manager.db().unwrap(), "local", "Creator", Settings::default())
+            .unwrap();
+        let directory = prepare_directory(test.path(), &manager.directory(&id).unwrap()).unwrap();
+        let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
+        assert!(workspace.browser.is_none());
+        assert!(seed_profile(&directory, &workspace.name).unwrap());
+        assert!(manager.profile_runtime(&workspace, &directory).unwrap().bundled);
+
+        for state in ["Local State", "Default/Cookies"] {
+            let state = directory.join(state);
+            fs::write(&state, "browser data").unwrap();
+            let error = manager.profile_runtime(&workspace, &directory).unwrap_err();
+            assert!(error.contains("predates browser tracking"));
+            fs::remove_file(state).unwrap();
+        }
+        fs::write(directory.join("Default/Preferences"), r#"{"profile":{"name":"Creator","created_by_version":"160.0.8182.0"}}"#).unwrap();
+        assert!(manager.profile_runtime(&workspace, &directory).is_err());
     }
 
     #[test]
