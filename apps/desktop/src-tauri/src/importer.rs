@@ -247,6 +247,8 @@ fn text_rows(bytes: &[u8], delimiter: u8) -> Result<Vec<(usize, Vec<String>)>, S
         .delimiter(delimiter)
         .from_reader(bytes);
     let mut rows = Vec::new();
+    let mut scanned = 0;
+    let mut bare_crs = 0;
     for row in reader.records() {
         if rows.len() > ROW_LIMIT {
             return Err("Use at most 1,000 data rows per file.".into());
@@ -255,10 +257,15 @@ fn text_rows(bytes: &[u8], delimiter: u8) -> Result<Vec<(usize, Vec<String>)>, S
         if row.len() > COLUMN_LIMIT {
             return Err("Use at most 32 columns.".into());
         }
-        rows.push((
-            row.position().map_or(rows.len() + 1, |p| p.line() as usize),
-            row.iter().map(str::to_owned).collect(),
-        ));
+        let number = row.position().map_or(rows.len() + 1, |p| {
+            let offset = p.byte() as usize;
+            bare_crs += (scanned..offset)
+                .filter(|&i| bytes[i] == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
+                .count();
+            scanned = offset;
+            p.line() as usize + bare_crs
+        });
+        rows.push((number, row.iter().map(str::to_owned).collect()));
     }
     Ok(rows)
 }
@@ -433,6 +440,20 @@ mod tests {
             (1, vec!["Example".to_owned()]), (2, vec!["Example".to_owned()]),
         ]);
         assert!(worksheet_rows(&mut book, 13).unwrap_err().contains("Expanded worksheet cell data"));
+    }
+
+    #[test]
+    fn carriage_return_records_have_independent_import_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let mut manager = Manager::new(root.path().into()).unwrap();
+        let input = b"name,notes\rFirst,\"line 1\rline 2\"\rSecond,\r";
+        let doc = preview(manager.db().unwrap(), "local", input, "csv").unwrap();
+        assert_eq!(doc.rows.iter().map(|row| row.number).collect::<Vec<_>>(), [2, 4]);
+        for row in &doc.rows {
+            assert_eq!(import_row(manager.db_mut().unwrap(), "local", &doc, row.number).unwrap(), "Imported");
+        }
+        let retry = preview(manager.db().unwrap(), "local", input, "csv").unwrap();
+        assert!(retry.rows.iter().all(|row| row.completed));
     }
 
     #[test]
