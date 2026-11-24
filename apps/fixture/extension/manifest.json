@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Slide Fixture Badge",
+  "version": "1.0.0",
+  "description": "Adds a test badge on the local Slide fixture only.",
+  "content_scripts": [{
+    "matches": ["http://127.0.0.1/*"],
+    "js": ["badge.js"]
+  }]
+}

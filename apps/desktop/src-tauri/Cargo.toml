@@ -11,6 +11,12 @@ dunce = "1"
 fs2 = "0.4"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+calamine = "0.38"
+csv = "1"
+quick-xml = "0.42"
+sha2 = "0.10"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

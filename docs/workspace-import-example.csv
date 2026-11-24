@@ -1,0 +1,4 @@
+name,start_url,launch_urls,icon,notes
+Creator QA,http://127.0.0.1:4310/,http://127.0.0.1:4311/,🌱,"Fixture only, no real accounts"
+Visionneuse Montréal,http://127.0.0.1:4310/,,🧪,"Unicode and ""quoted"" text"
+Blank test workspace,,,,Uses Chrome's normal first-run page
