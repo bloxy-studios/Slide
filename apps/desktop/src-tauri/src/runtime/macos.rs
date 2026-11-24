@@ -34,6 +34,7 @@ pub fn inspect(selected: &Path) -> Result<RuntimeInfo, String> {
     let (brand, expected) = match value("CFBundleIdentifier") {
         Some("com.google.Chrome") => ("Google Chrome", "Google Chrome"),
         Some("org.chromium.Chromium") => ("Chromium", "Chromium"),
+        Some("io.ungoogled-software.ungoogled-chromium") => ("ungoogled-chromium", "Chromium"),
         _ => return Err("The selected application is not a supported browser.".into()),
     };
     if value("CFBundleExecutable") != Some(expected) {

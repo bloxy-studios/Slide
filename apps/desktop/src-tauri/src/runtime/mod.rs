@@ -97,7 +97,7 @@ impl Chromium {
     pub fn inspect_bundled(path: &Path) -> Result<RuntimeInfo, String> {
         let mut runtime = native::inspect(path)
             .map_err(|error| format!("Bundled Chromium is unavailable: {error} Reinstall Slide or choose another browser."))?;
-        if runtime.brand != "Chromium" {
+        if !matches!(runtime.brand.as_str(), "Chromium" | "ungoogled-chromium") {
             return Err("The bundled browser does not identify as Chromium. Reinstall Slide.".into());
         }
         runtime.bundled = true;

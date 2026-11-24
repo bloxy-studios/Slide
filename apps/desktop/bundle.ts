@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const builds = {
-  "aarch64-apple-darwin": ["mac-arm", "Mac_Arm", "1753271", "chrome-mac.zip", "165574b1c45bb0b1c4fd4657e9e3889e41f69e4f72eb9cb01da8f887882d8b09"],
-  "x86_64-apple-darwin": ["mac-intel", "Mac", "1753296", "chrome-mac.zip", "13f58ab268c3bbd84cce9f22f2d65c110c754242ebe8de559fa2e83a505f069b"],
-  "x86_64-pc-windows-msvc": ["win-x64", "Win_x64", "1753232", "chrome-win.zip", "cb2d226d4752d69fa0184c1bb3cf98de811af4f07fa9235f3ae85d9c20b4a0b3"],
+  "aarch64-apple-darwin": ["mac-arm", "macos", "157.0.8103.78-1.1", "arm64-macos.dmg", "bdfe0ee51e47b7ff49c94778c6d9adb08a626dfbd6089570bbbb455410f1a41a"],
+  "x86_64-apple-darwin": ["mac-intel", "macos", "157.0.8103.78-1.1", "x86_64-macos.dmg", "8a7306ac6218f8b0f3c38b570922115b9545749ae4c0b2c29bbd1ebb5c00459f"],
+  "x86_64-pc-windows-msvc": ["win-x64", "windows", "158.0.8127.36-1.1", "windows_x64.zip", "bc78b9590881f8ca99aca29288d1b347ffdd689ca8a57384bb0bc113ef687b6b"],
 } as const;
 const args = Bun.argv.slice(2);
 const targetFlag = args.indexOf("--target");
@@ -16,12 +16,16 @@ if (!Object.hasOwn(builds, target) || (process.platform === "win32" ? !target.en
   process.platform !== "darwin" || !target.endsWith("-darwin"))) {
   throw new Error("Bundle on macOS or Windows with one of the supported native Chromium targets.");
 }
-const [id, platform, revision, file, sha256] = builds[target];
+const [id, platform, release, asset, sha256] = builds[target];
+const file = `ungoogled-chromium_${release}_${asset}`;
 const tauri = join(import.meta.dir, "src-tauri");
 const stage = `target/chromium-${id}`;
-const cache = join(tauri, `${stage}.zip`);
+const cache = join(tauri, "target", file);
 const unpack = join(tauri, stage);
-const license = "../../../docs/chromium-license.txt";
+const licenses = {
+  "../../../docs/chromium-license.txt": "chromium/LICENSE.txt",
+  "../../../docs/ungoogled-chromium-license.txt": "chromium/LICENSE-ungoogled.txt",
+};
 
 async function run(command: string[], retryBusyDmg = false) {
   for (let attempt = 1; ; attempt++) {
@@ -49,7 +53,7 @@ await mkdir(join(tauri, "target"), { recursive: true });
 if (!await Bun.file(cache).exists()) {
   const pending = `${cache}.download`;
   try {
-    const url = `https://storage.googleapis.com/chromium-browser-snapshots/${platform}/${revision}/${file}`;
+    const url = `https://github.com/ungoogled-software/ungoogled-chromium-${platform}/releases/download/${release}/${file}`;
     await run(["curl", "--fail", "--location", "--retry", "2", "--max-time", "300", "--output", pending, url]);
     if (await digest(pending) !== sha256) throw new Error("Downloaded Chromium checksum mismatch.");
     await rename(pending, cache);
@@ -63,23 +67,34 @@ if (!await Bun.file(cache).exists()) {
 await rm(unpack, { recursive: true, force: true });
 await mkdir(unpack);
 const bundle = process.platform === "darwin" ? {
-  resources: { [license]: "chromium/LICENSE.txt" },
+  resources: licenses,
   macOS: {
     signingIdentity: "-",
     hardenedRuntime: false,
-    files: { "Frameworks/Chromium.app": `${stage}/chrome-mac/Chromium.app` },
+    files: { "Frameworks/Chromium.app": `${stage}/Chromium.app` },
   },
 } : {
-  resources: { [license]: "chromium/LICENSE.txt", [`${stage}/chrome-win/`]: "chromium/" },
+  resources: { ...licenses, [`${stage}/chrome-win/`]: "chromium/" },
 };
 if (process.platform === "darwin") {
-  await run(["/usr/bin/ditto", "-x", "-k", cache, unpack]);
-  const app = join(unpack, "chrome-mac", "Chromium.app");
+  const mount = await mkdtemp(join(tauri, "target", "ungoogled-mount-"));
+  const app = join(unpack, "Chromium.app");
+  try {
+    await run(["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", mount, cache]);
+    try {
+      await run(["/usr/bin/ditto", "--norsrc", join(mount, "Chromium.app"), app]);
+    } finally {
+      await run(["/usr/bin/hdiutil", "detach", mount]);
+    }
+  } finally {
+    await rmdir(mount);
+  }
   await run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", app]);
   await run(["/usr/bin/codesign", "--verify", "--deep", "--strict", app]);
 } else {
-  await run(["tar.exe", "-xf", cache, "-C", unpack,
-    "--exclude=chrome-win/interactive_ui_tests.exe", "--exclude=chrome-win/setup.exe"]);
+  const windows = join(unpack, "chrome-win");
+  await mkdir(windows);
+  await run(["tar.exe", "-xf", cache, "-C", windows, "--strip-components", "1"]);
 }
 const configPath = join(tauri, `${stage}.json`);
 await writeFile(configPath, JSON.stringify({ bundle }));

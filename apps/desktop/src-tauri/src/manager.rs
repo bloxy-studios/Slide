@@ -1036,6 +1036,35 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn fresh_profile_uses_ungoogled_bundle_without_switching_existing_chromium_profile() {
+        let test = tempfile::tempdir().unwrap();
+        let original = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", "157.0.8103.78");
+        let bundled = mac_browser(
+            &test.path().join("bundle"),
+            "Chromium",
+            "io.ungoogled-software.ungoogled-chromium",
+            "157.0.8103.78",
+        );
+        let manager = Manager::with_bundle(test.path().into(), Some(bundled)).unwrap();
+        let id = insert_workspace(manager.db().unwrap(), "local", "Creator", Settings::default())
+            .unwrap();
+        let directory = prepare_directory(test.path(), &manager.directory(&id).unwrap()).unwrap();
+        let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
+        let runtime = manager.profile_runtime(&workspace, &directory).unwrap();
+        assert!(runtime.bundled);
+        assert_eq!(runtime.brand, "ungoogled-chromium");
+
+        let original = Chromium::inspect(&original).unwrap();
+        manager.record_browser(&id, &original).unwrap();
+        let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
+        assert_eq!(
+            manager.profile_runtime(&workspace, &directory).unwrap().path,
+            original.path
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn persisted_chrome_profile_keeps_chrome_when_bundled_is_selected() {
         let test = tempfile::tempdir().unwrap();
         let bundled = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", "160.0.8182.0");
