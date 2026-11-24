@@ -944,16 +944,13 @@ impl Manager {
                     let should_seed = runtime.bundled;
                     (runtime, should_seed)
                 };
-                let route = match self.workspace_proxy(&account, id)? {
-                    Some(proxy) => {
-                        if !runtime.supports_required_http_proxy() {
-                            return Err("Required HTTP proxy launch is only enabled for bundled Chromium on macOS arm64. No direct fallback was attempted.".into());
-                        }
-                        proxy.require_reachable()?;
-                        crate::runtime::Route::Proxy(proxy)
+                let route = crate::runtime::Route::resolve(self.db()?, &account, &workspace.settings.connection)?;
+                if let crate::runtime::Route::Proxy(proxy) = &route {
+                    if !runtime.supports_required_http_proxy() {
+                        return Err("Required HTTP proxy launch is only enabled for bundled Chromium on macOS arm64. No direct fallback was attempted.".into());
                     }
-                    None => crate::runtime::Route::Direct,
-                };
+                    proxy.require_reachable()?;
+                }
                 self.catalog()?
                     .db
                     .execute("UPDATE workspaces SET exit_note = NULL WHERE id = ?1", [id])

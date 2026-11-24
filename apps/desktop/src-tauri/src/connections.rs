@@ -17,6 +17,7 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 #[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Selection {
     #[default]
+    System,
     Direct,
     Saved {
         id: String,
@@ -195,7 +196,7 @@ pub fn resolve(
     selection: &Selection,
 ) -> Result<Option<Proxy>, String> {
     match selection {
-        Selection::Direct => Ok(None),
+        Selection::System | Selection::Direct => Ok(None),
         Selection::Workspace { endpoint } => Proxy::parse(endpoint).map(Some),
         Selection::Saved { id } => {
             let endpoint: String = db

@@ -19,7 +19,7 @@ export function Diagnostics({ runtime, runtimeError, platform, requiredHttpProxy
       <dt>Platform</dt><dd>{platform}</dd>
       <dt>Runtime</dt><dd>{runtime ? `${runtime.brand} ${runtime.version} · ${runtime.architecture} · ${runtime.bundled ? "bundled" : "installed"}` : runtimeError ?? "Unavailable"}</dd>
       {runtime && <><dt>Executable</dt><dd className="path">{runtime.path}</dd></>}
-      <dt>Workspace networking</dt><dd>Direct · {requiredHttpProxyAvailable ? "required HTTP proxy available" : "required proxy launch unsupported for this runtime/platform"}</dd>
+      <dt>Workspace networking</dt><dd>System default · Direct · {requiredHttpProxyAvailable ? "required HTTP proxy available" : "required proxy launch unsupported for this runtime/platform"}</dd>
       <dt>Other transports</dt><dd>HTTPS and SOCKS proxy transport, SSH, WireGuard, and AmneziaWG are blocked pending route, DNS and failure verification.</dd>
       <dt>Fixture presets</dt><dd>First-party simulation only; ordinary browsing keeps its standard device reporting.</dd>
     </dl>

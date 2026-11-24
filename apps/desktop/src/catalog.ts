@@ -5,7 +5,7 @@ export const statusLabels = {
   closing: "Closing…", locked: "Profile in use", crashed: "Exited unexpectedly",
 };
 export type Operation = "open" | "focus" | "close";
-export type ConnectionSelection = { mode: "direct" } | { mode: "saved"; id: string } | { mode: "workspace"; endpoint: string };
+export type ConnectionSelection = { mode: "system" } | { mode: "direct" } | { mode: "saved"; id: string } | { mode: "workspace"; endpoint: string };
 export type SavedConnection = { id: string; name: string; endpoint: string };
 export type Settings = {
   icon: string; notes: string; launchUrls: string[]; folderId: string | null;
@@ -15,7 +15,7 @@ export type Settings = {
 export const emptySettings: Settings = {
   icon: "", notes: "", launchUrls: [], folderId: null,
   tagIds: [], pinnedTagId: null, bookmarkIds: [], extensionIds: [],
-  connection: { mode: "direct" },
+  connection: { mode: "system" },
 };
 export type Workspace = {
   id: string; name: string; settings: Settings; status: Status; detail: string | null;

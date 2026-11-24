@@ -38,9 +38,12 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
     <label>Launch URLs (one HTTP(S) URL per line)<textarea rows={2} value={urlText} placeholder="http://127.0.0.1:4310"
       onChange={e => { setUrlText(e.target.value); set({ launchUrls: e.target.value.split("\n").filter(url => url.trim()) }); }} /></label>
     <label>Connection<select value={value.connection.mode === "saved" ? value.connection.id : value.connection.mode}
-      onChange={e => set({ connection: e.target.value === "direct" ? { mode: "direct" } : e.target.value === "workspace"
-        ? { mode: "workspace", endpoint: "" } : { mode: "saved", id: e.target.value } })}>
-      <option value="direct">Direct (no proxy)</option><option value="workspace">Workspace-only HTTP proxy</option>
+      onChange={e => {
+        const mode = e.target.value;
+        set({ connection: mode === "system" || mode === "direct" ? { mode } : mode === "workspace"
+          ? { mode, endpoint: "" } : { mode: "saved", id: mode } });
+      }}>
+      <option value="system">System default</option><option value="direct">Direct (no proxy)</option><option value="workspace">Workspace-only HTTP proxy</option>
       {catalog.connections.map(connection => <option key={connection.id} value={connection.id}>{connection.name} (required)</option>)}
     </select></label>
     {value.connection.mode === "workspace" && <label>Required HTTP proxy endpoint<input required
