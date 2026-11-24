@@ -18,7 +18,7 @@ The installers include the [Chromium license notice](chromium-license.txt); thir
 
 - Each workspace still uses its own app-owned `--user-data-dir` and opens a normal, non-kiosk browser window with the configured launch URLs. Slide seeds the Chromium profile name in `Default/Preferences` if the workspace data directory is empty; it does not overwrite existing Preferences or Chromium-managed Local State. A settings-only clone gets a fresh UUID and browser directory.
 - Continue to use the browser's normal, user-approved extension flow. No silent installation, arbitrary launch arguments, or proxy settings are added by this bundle. Per-workspace proxy configuration remains gated on verifying the route and fail-closed behavior.
-- An installed browser override is app-wide for new sessions. Already running workspaces retain their verified process. Browser-version downgrades and Chrome/Chromium encrypted storage migration are not validated; use the same runtime for existing browser data, and back up the manager's data before switching engines.
+- An installed browser override is app-wide for new profiles. Existing profiles keep using their recorded browser brand or block if no compatible copy is available. Slide can identify a legacy profile from an already-running verified session; if it cannot identify a nonempty legacy profile, it blocks rather than risk its saved sessions. Back up the manager's data before upgrading. Browser-version downgrades and Chrome/Chromium encrypted storage migration are not supported.
 
 ### Updates
 

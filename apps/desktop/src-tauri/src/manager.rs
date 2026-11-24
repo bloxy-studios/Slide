@@ -61,6 +61,8 @@ struct Workspace {
     can_close: bool,
     #[serde(skip)]
     identity: Option<Identity>,
+    #[serde(skip)]
+    browser: Option<(String, PathBuf)>,
 }
 
 #[derive(Serialize)]
@@ -125,6 +127,7 @@ impl Manager {
         let migrations = [
             include_str!("../migrations/001_workspaces.sql"),
             include_str!("../migrations/002_catalog.sql"),
+            include_str!("../migrations/003_profile_browser.sql"),
         ];
         if version as usize > migrations.len() {
             return Err(
@@ -299,7 +302,7 @@ impl Manager {
 
     fn rows(&self, account: &str, id: Option<&str>) -> Result<Vec<Workspace>, String> {
         let mut statement = self.db()?.prepare(
-            "SELECT id,name,start_url,pid,started,exit_note,settings,created_at,trashed_at FROM workspaces
+            "SELECT id,name,start_url,pid,started,exit_note,settings,created_at,trashed_at,browser_brand,browser_path FROM workspaces
              WHERE account_id=?1 AND (?2 IS NULL OR id=?2) ORDER BY rowid",
         ).map_err(db_error)?;
         let rows = statement
@@ -319,6 +322,10 @@ impl Manager {
                         settings: Settings::default(),
                         created_at: row.get(7)?,
                         trashed_at: row.get(8)?,
+                        browser: row
+                            .get::<_, Option<String>>(9)?
+                            .zip(row.get::<_, Option<String>>(10)?)
+                            .map(|(brand, path)| (brand, PathBuf::from(path))),
                     },
                     row.get::<_, String>(6)?,
                 ))
@@ -513,6 +520,12 @@ impl Manager {
         let observation = self.chromium.observe(&directory);
         let (status, identity) = match &observation {
             Observation::Session(session) => {
+                if workspace.browser.is_none() {
+                    if let Ok(runtime) = Chromium::inspect(&session.executable) {
+                        self.record_browser(&workspace.id, &runtime)?;
+                        workspace.browser = Some((runtime.brand, runtime.path));
+                    }
+                }
                 let (status, ended) = session_status(session, transition);
                 if ended {
                     if transition.is_some_and(|t| t.status == Status::Closing && session.window) {
@@ -597,6 +610,42 @@ impl Manager {
         self.perform_with_url(id, operation, None)
     }
 
+    fn record_browser(&self, id: &str, runtime: &RuntimeInfo) -> Result<(), String> {
+        self.db()?.execute(
+            "UPDATE workspaces SET browser_brand=?1, browser_path=?2 WHERE id=?3",
+            params![runtime.brand, runtime.path.to_str().ok_or("The browser path is not valid Unicode.")?, id],
+        ).map_err(db_error)?;
+        Ok(())
+    }
+
+    fn profile_runtime(&self, workspace: &Workspace, directory: &Path) -> Result<RuntimeInfo, String> {
+        let selected = self.runtime.as_ref().map_err(Clone::clone).and_then(|cached| {
+            if cached.bundled {
+                Chromium::inspect_bundled(&cached.path)
+            } else {
+                Chromium::inspect(&cached.path)
+            }
+        });
+        if let Some((brand, path)) = &workspace.browser {
+            return Chromium::inspect(path)
+                .ok()
+                .filter(|runtime| &runtime.brand == brand)
+                .map(|runtime| match &selected {
+                    Ok(selected) if selected.path == runtime.path => selected.clone(),
+                    _ => runtime,
+                })
+                .or_else(|| selected.ok().filter(|runtime| &runtime.brand == brand))
+                .or_else(|| self.bundled_path.as_deref().and_then(|path| Chromium::inspect_bundled(path).ok())
+                    .filter(|runtime| &runtime.brand == brand))
+                .or_else(|| Chromium::discover_brand(brand))
+                .ok_or_else(|| format!("This workspace last used {brand}. Install a compatible {brand} or select it in the manager to reopen without risking its saved sessions."));
+        }
+        if !profile_directory_is_empty(directory)? {
+            return Err("This existing profile predates browser tracking. Slide cannot verify its browser and will not risk its saved sessions. Keep the original profile and clone its settings into a new workspace, or restore a pre-upgrade backup with the original Slide and browser.".into());
+        }
+        selected
+    }
+
     fn perform_with_url(
         &mut self,
         id: &str,
@@ -667,18 +716,12 @@ impl Manager {
                     self.chromium.verified(&directory, session.identity)?;
                     session.executable
                 } else {
-                    let cached = self.runtime.as_ref().map_err(Clone::clone)?;
-                    let runtime = if cached.bundled {
-                        Chromium::inspect_bundled(&cached.path)?
-                    } else {
-                        Chromium::inspect(&cached.path)?
-                    };
+                    let runtime = self.profile_runtime(&workspace, &directory)?;
+                    self.record_browser(id, &runtime)?;
                     if runtime.bundled {
                         seed_profile(&directory, &workspace.name)?;
                     }
-                    let executable = runtime.path.clone();
-                    self.runtime = Ok(runtime);
-                    executable
+                    runtime.path
                 };
                 self.catalog()?
                     .db
@@ -763,6 +806,13 @@ fn prepare_directory(root: &Path, directory: &Path) -> Result<PathBuf, String> {
     checked_directory(root, directory)
 }
 
+fn profile_directory_is_empty(directory: &Path) -> Result<bool, String> {
+    fs::read_dir(directory)
+        .and_then(|mut entries| entries.next().transpose())
+        .map(|entry| entry.is_none())
+        .map_err(|error| format!("Could not inspect the workspace directory: {error}"))
+}
+
 fn seed_profile(directory: &Path, name: &str) -> Result<(), String> {
     let first_run = (|| -> std::io::Result<()> {
         if fs::read_dir(directory)?.next().transpose()?.is_some() {
@@ -821,6 +871,8 @@ pub(crate) fn validate_url(input: &str) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn bundled_profile_seeding_never_changes_existing_preferences() {
         let test = tempfile::tempdir().unwrap();
@@ -833,7 +885,70 @@ mod tests {
         assert_eq!(fs::read_to_string(preferences).unwrap(), "{}");
     }
 
-    use super::*;
+    #[test]
+    fn untracked_nonempty_profile_is_not_opened_in_a_new_browser() {
+        let test = tempfile::tempdir().unwrap();
+        let db = Connection::open(test.path().join("catalog.sqlite3")).unwrap();
+        db.execute_batch(include_str!("../migrations/001_workspaces.sql")).unwrap();
+        db.execute_batch(include_str!("../migrations/002_catalog.sql")).unwrap();
+        db.pragma_update(None, "user_version", 2).unwrap();
+        let id = insert_workspace(&db, "local", "Legacy", Settings::default()).unwrap();
+        drop(db);
+        let directory = prepare_directory(test.path(), &test.path().join("profiles").join(&id))
+            .unwrap();
+        let session = directory.join("synthetic-session");
+        fs::write(&session, "Creator").unwrap();
+
+        let mut manager = Manager::new(test.path().into()).unwrap();
+        let error = manager.perform(&id, Operation::Open).unwrap_err();
+        assert!(error.contains("predates browser tracking"));
+        assert_eq!(fs::read_to_string(session).unwrap(), "Creator");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn persisted_chrome_profile_keeps_chrome_when_bundled_is_selected() {
+        fn browser(root: &Path, brand: &str, identifier: &str) -> PathBuf {
+            let app = root.join(format!("{brand}.app"));
+            fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+            let plist = plist::Dictionary::from_iter([
+                ("CFBundleIdentifier", plist::Value::String(identifier.into())),
+                ("CFBundleExecutable", plist::Value::String(brand.into())),
+                ("CFBundleShortVersionString", plist::Value::String("1.0".into())),
+            ]);
+            plist::Value::Dictionary(plist)
+                .to_file_xml(app.join("Contents/Info.plist"))
+                .unwrap();
+            let arch: u32 = if cfg!(target_arch = "aarch64") { 0x0100000c } else { 0x01000007 };
+            fs::write(
+                app.join("Contents/MacOS").join(brand),
+                [0xfeedfacfu32.to_be_bytes(), arch.to_be_bytes()].concat(),
+            )
+            .unwrap();
+            app
+        }
+
+        let test = tempfile::tempdir().unwrap();
+        let bundled = browser(test.path(), "Chromium", "org.chromium.Chromium");
+        let chrome = browser(test.path(), "Google Chrome", "com.google.Chrome");
+        let manager = Manager::with_bundle(test.path().into(), Some(bundled.clone())).unwrap();
+        let id = insert_workspace(manager.db().unwrap(), "local", "Creator", Settings::default())
+            .unwrap();
+        let directory = prepare_directory(test.path(), &manager.directory(&id).unwrap()).unwrap();
+        let chrome = Chromium::inspect(&chrome).unwrap();
+        manager.record_browser(&id, &chrome).unwrap();
+        drop(manager);
+
+        let manager = Manager::with_bundle(test.path().into(), Some(bundled)).unwrap();
+        let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
+        assert!(manager.runtime.as_ref().unwrap().bundled);
+        assert_eq!(manager.profile_runtime(&workspace, &directory).unwrap().path, chrome.path);
+
+        let clone = manager.clone_workspace("local", &id, "Viewer").unwrap();
+        let workspace = manager.rows("local", Some(&clone)).unwrap().pop().unwrap();
+        let directory = prepare_directory(test.path(), &manager.directory(&clone).unwrap()).unwrap();
+        assert!(manager.profile_runtime(&workspace, &directory).unwrap().bundled);
+    }
 
     #[test]
     fn local_accounts_isolate_catalog_and_clones_never_share_browser_data() {

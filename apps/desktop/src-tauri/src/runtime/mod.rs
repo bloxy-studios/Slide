@@ -63,6 +63,13 @@ impl Chromium {
         })
     }
 
+    pub fn discover_brand(brand: &str) -> Option<RuntimeInfo> {
+        native::candidates()
+            .into_iter()
+            .filter_map(|path| Self::inspect(&path).ok())
+            .find(|runtime| runtime.brand == brand)
+    }
+
     pub fn bundled_path(resources: &Path) -> PathBuf {
         #[cfg(target_os = "macos")]
         let path = resources.join("../Frameworks/Chromium.app");

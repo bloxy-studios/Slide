@@ -373,7 +373,7 @@ function App() {
                 {trash ? <div className="actions"><button disabled={disabled} onClick={() => beginWorkspaceBatch([row], "restore")}>Restore</button>
                   <button disabled={disabled} onClick={() => beginWorkspaceBatch([row], "purge")}>Permanently delete</button></div> :
                   <><div className="actions" aria-label={`Actions for ${row.name}`}>
-                    <button className="primary" disabled={pending || (!data?.runtime && !running) || row.status === "locked"} onClick={() => action(row, "open")}>Open</button>
+                    <button className="primary" disabled={pending || row.status === "locked"} onClick={() => action(row, "open")}>Open</button>
                     <button disabled={pending || row.status !== "running"} onClick={() => action(row, "focus")}>Focus</button>
                     <button disabled={pending || !row.canClose} onClick={() => action(row, "close")}>Close</button>
                   </div>
