@@ -42,7 +42,7 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
       <option value="">None</option>{catalog.tags.filter(t => value.tagIds.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
     </select></label>
     <Checklist title="Reusable bookmarks" items={catalog.bookmarks} value={value.bookmarkIds} change={bookmarkIds => set({ bookmarkIds })} />
-    <Checklist title="Extension assignments (install in browser separately)" items={catalog.extensions} value={value.extensionIds} change={extensionIds => set({ extensionIds })} />
+    <Checklist title="Extension assignments (approve installation separately)" items={catalog.extensions} value={value.extensionIds} change={extensionIds => set({ extensionIds })} />
   </>;
 }
 

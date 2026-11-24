@@ -1,5 +1,6 @@
 use crate::{
     catalog::{self, CatalogView, ItemKind, Settings},
+    crx,
     runtime::{Chromium, Identity, Observation, RuntimeInfo, Session},
 };
 use fs2::FileExt;
@@ -127,6 +128,7 @@ pub struct Manager {
     children: HashMap<String, Vec<ChildProcess>>,
     transitions: HashMap<String, Transition>,
     pub import_preview: Option<(String, crate::importer::Preview)>,
+    crx_review: Option<(Uuid, String, String, String, crx::Package)>,
 }
 
 impl Manager {
@@ -157,6 +159,7 @@ impl Manager {
             include_str!("../migrations/002_catalog.sql"),
             include_str!("../migrations/003_profile_browser.sql"),
             include_str!("../migrations/004_profile_browser_version.sql"),
+            include_str!("../migrations/005_workspace_crx.sql"),
         ];
         if version as usize > migrations.len() {
             return Err(
@@ -196,6 +199,7 @@ impl Manager {
             children: HashMap::new(),
             transitions: HashMap::new(),
             import_preview: None,
+            crx_review: None,
         })
     }
 
@@ -208,6 +212,7 @@ impl Manager {
             children: HashMap::new(),
             transitions: HashMap::new(),
             import_preview: None,
+            crx_review: None,
         }
     }
 
@@ -296,6 +301,97 @@ impl Manager {
         self.db()?.execute("DELETE FROM runtime_settings", []).map_err(db_error)?;
         self.runtime = Ok(runtime.clone());
         Ok(runtime)
+    }
+
+    fn extension_target(&mut self, account: &str, id: &str, extension: &str) -> Result<(Workspace, catalog::Extension, RuntimeInfo), String> {
+        self.require_account(account)?;
+        let mut workspace = self.rows(account, Some(id))?.pop()
+            .filter(|row| row.trashed_at.is_none())
+            .ok_or("Workspace no longer exists.")?;
+        if !workspace.settings.extension_ids.iter().any(|entry| entry == extension) {
+            return Err("Assign the extension to this workspace first.".into());
+        }
+        let entry = catalog::item(self.db()?, account, ItemKind::Extension, extension)?;
+        let directory = self.directory(id)?;
+        self.chromium.refresh();
+        self.reconcile(&mut workspace)?;
+        let runtime = match workspace.status {
+            Status::Closed | Status::Crashed => {
+                let directory = prepare_directory(self.root()?, &directory)?;
+                self.profile_runtime(&workspace, &directory)?
+            }
+            Status::Running | Status::Background => {
+                let directory = checked_directory(self.root()?, &directory)?;
+                let Observation::Session(session) = self.chromium.observe(&directory) else {
+                    return Err("The browser changed. Try again.".into());
+                };
+                self.chromium.verified(&directory, session.identity)?;
+                self.identify_bundled(Chromium::inspect(&session.executable)?)
+            }
+            _ => return Err("Wait for this workspace to finish opening or closing, or resolve its profile lock.".into()),
+        };
+        Ok((workspace, entry, runtime))
+    }
+
+    pub fn extension_install_options(&mut self, account: &str, id: &str, extension: &str) -> Result<crx::InstallOptions, String> {
+        let (_, entry, runtime) = self.extension_target(account, id, extension)?;
+        let installed = crx::installed(self.db()?, id, extension)?
+            .filter(|install| install.browser_id == crx_id(&entry));
+        let update_available = installed.as_ref().and_then(|install| crx::version(&install.version))
+            .zip(crx::version(&entry.version)).is_some_and(|(installed, pin)| pin > installed);
+        Ok(crx::InstallOptions { bundled: runtime.bundled, installed_version: installed.map(|install| install.version), update_available })
+    }
+
+    pub fn review_crx(&mut self, account: &str, id: &str, extension: &str, path: Option<&Path>) -> Result<(Uuid, crx::Review), String> {
+        self.crx_review = None;
+        let (workspace, entry, runtime) = self.extension_target(account, id, extension)?;
+        if !runtime.bundled || !matches!(workspace.status, Status::Closed | Status::Crashed) {
+            return Err("Close the bundled browser workspace before reviewing a CRX.".into());
+        }
+        let package = match path {
+            Some(path) => crx::inspect_file(path, crx_id(&entry), &entry.version)?,
+            None if entry.source == "fixture" => crx::fixture(&entry.version)?,
+            None => return Err("Choose a downloaded CRX file.".into()),
+        };
+        let token = Uuid::new_v4();
+        let review = package.review.clone();
+        self.crx_review = Some((token, account.into(), id.into(), extension.into(), package));
+        Ok((token, review))
+    }
+
+    pub fn approve_crx(&mut self, account: &str, token: Uuid) -> Result<(), String> {
+        let (_, owner, id, extension, package) = self.crx_review.take()
+            .filter(|(reviewed, owner, ..)| *reviewed == token && owner == account)
+            .ok_or("Review this extension again before installing it.")?;
+        let (workspace, entry, runtime) = self.extension_target(&owner, &id, &extension)?;
+        if !runtime.bundled || !matches!(workspace.status, Status::Closed | Status::Crashed)
+            || package.review.browser_id != crx_id(&entry) || package.review.version != entry.version
+        {
+            return Err("The workspace or catalog changed. Review this extension again.".into());
+        }
+        if crx::installed(self.db()?, &id, &extension)?
+            .filter(|installed| installed.browser_id == package.review.browser_id)
+            .and_then(|installed| crx::version(&installed.version))
+            .zip(crx::version(&package.review.version))
+            .is_some_and(|(installed, proposed)| installed > proposed)
+        {
+            return Err("Slide will not downgrade the installed extension.".into());
+        }
+        crx::install(self.db()?, self.root()?, &id, &extension, package)
+    }
+
+    fn approved_extensions(&self, account: &str, workspace: &Workspace) -> Result<Vec<PathBuf>, String> {
+        let db = self.db()?;
+        let mut paths = Vec::new();
+        for id in &workspace.settings.extension_ids {
+            if let Some(install) = crx::installed(db, &workspace.id, id)? {
+                let entry = catalog::item(db, account, ItemKind::Extension, id)?;
+                if install.browser_id == crx_id(&entry) {
+                    paths.push(crx::approved_path(self.root()?, &workspace.id, &install)?);
+                }
+            }
+        }
+        Ok(paths)
     }
 
     #[cfg(test)]
@@ -479,6 +575,7 @@ impl Manager {
             }
             TrashAction::Purge if row.trashed_at.is_some() => {
                 self.require_inactive(&mut row)?;
+                crx::remove_workspace(self.root()?, id)?;
                 let directory = self.directory(id)?;
                 match fs::symlink_metadata(&directory) {
                     Ok(_) => {
@@ -674,6 +771,13 @@ impl Manager {
         Ok(())
     }
 
+    fn identify_bundled(&self, runtime: RuntimeInfo) -> RuntimeInfo {
+        self.bundled_path.as_deref()
+            .and_then(|path| Chromium::inspect_bundled(path).ok())
+            .filter(|bundled| bundled.path == runtime.path)
+            .unwrap_or(runtime)
+    }
+
     fn profile_runtime(&self, workspace: &Workspace, directory: &Path) -> Result<RuntimeInfo, String> {
         let selected = self.runtime.as_ref().map_err(Clone::clone).and_then(|cached| {
             if cached.bundled {
@@ -691,7 +795,7 @@ impl Manager {
                 .filter(|runtime| browser.accepts(runtime))
                 .map(|runtime| match &selected {
                     Ok(selected) if selected.path == runtime.path => selected.clone(),
-                    _ => runtime,
+                    _ => self.identify_bundled(runtime),
                 })
                 .or_else(|| selected.ok().filter(|runtime| browser.accepts(runtime)))
                 .or_else(|| self.bundled_path.as_deref().and_then(|path| Chromium::inspect_bundled(path).ok())
@@ -792,8 +896,9 @@ impl Manager {
                     workspace.settings.launch_urls.as_slice(),
                     std::slice::from_ref,
                 );
+                let extensions = if should_seed { self.approved_extensions(&account, &workspace)? } else { Vec::new() };
                 let seeded = should_seed && seed_profile(&directory, &workspace.name)?;
-                let child = Chromium::launch(&executable, &directory, urls, reopen).map_err(|error| {
+                let child = Chromium::launch(&executable, &directory, urls, reopen, &extensions).map_err(|error| {
                     if seeded {
                         remove_profile_seed(&directory.join("Default"));
                     }
@@ -819,6 +924,10 @@ impl Manager {
             }
         }
     }
+}
+
+fn crx_id(entry: &catalog::Extension) -> &str {
+    if entry.source == "fixture" { crx::FIXTURE_ID } else { &entry.browser_id }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -1061,6 +1170,47 @@ mod tests {
             manager.profile_runtime(&workspace, &directory).unwrap().path,
             original.path
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fixture_crx_requires_workspace_approval_for_install_and_update() {
+        let test = tempfile::tempdir().unwrap();
+        let browser = mac_browser(test.path(), "Chromium", "io.ungoogled-software.ungoogled-chromium", "157.0.8103.78");
+        let mut manager = Manager::with_bundle(test.path().into(), Some(browser)).unwrap();
+        let extension = crate::extensions::stage(manager.db().unwrap(), test.path(), "local", None, "fixture", None, false).unwrap();
+        let settings = Settings { extension_ids: vec![extension.clone()], ..Default::default() };
+        let id = insert_workspace(manager.db().unwrap(), "local", "Creator", settings.clone()).unwrap();
+        let other = insert_workspace(manager.db().unwrap(), "local", "Viewer", settings).unwrap();
+        let (token, review) = manager.review_crx("local", &id, &extension, None).unwrap();
+        assert_eq!(review.version, "1.0.0");
+        assert!(crx::installed(manager.db().unwrap(), &id, &extension).unwrap().is_none());
+        manager.approve_crx("local", token).unwrap();
+        assert!(manager.approve_crx("local", token).is_err());
+        let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
+        let path = manager.approved_extensions("local", &workspace).unwrap().pop().unwrap();
+        assert!(path.join("badge.js").is_file());
+        let other_row = manager.rows("local", Some(&other)).unwrap().pop().unwrap();
+        assert!(manager.approved_extensions("local", &other_row).unwrap().is_empty());
+
+        crate::extensions::stage(manager.db().unwrap(), test.path(), "local", Some(extension.clone()), "fixture", None, true).unwrap();
+        let options = manager.extension_install_options("local", &id, &extension).unwrap();
+        assert_eq!(options.installed_version.as_deref(), Some("1.0.0"));
+        assert!(options.update_available);
+        let (token, review) = manager.review_crx("local", &id, &extension, None).unwrap();
+        assert_eq!(review.version, "1.0.1");
+        assert!(path.is_dir());
+        manager.approve_crx("local", token).unwrap();
+        assert!(!path.exists());
+        assert!(!manager.extension_install_options("local", &id, &extension).unwrap().update_available);
+
+        let directory = manager.directory(&id).unwrap();
+        let runtime = manager.profile_runtime(&workspace, &directory).unwrap();
+        manager.record_browser(&id, &runtime).unwrap();
+        let chrome = mac_browser(test.path(), "Google Chrome", "com.google.Chrome", "158.0.8127.36");
+        manager.choose_runtime(chrome).unwrap();
+        assert!(manager.extension_install_options("local", &id, &extension).unwrap().bundled);
+        assert!(!manager.extension_install_options("local", &other, &extension).unwrap().bundled);
     }
 
     #[cfg(target_os = "macos")]
