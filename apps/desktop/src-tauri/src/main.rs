@@ -229,7 +229,7 @@ fn finish_task(
     state: State<'_, AppState>,
     account: String,
     id: String,
-    snooze: Option<i64>,
+    snooze: bool,
 ) -> Result<(), String> {
     with_manager(state, |manager| {
         manager.require_account(&account)?;

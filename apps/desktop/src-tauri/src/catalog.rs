@@ -8,6 +8,8 @@ use std::{
 use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, String>;
+const MAX_TASK_TIME: i64 = 253_402_300_799;
+const SNOOZE_SECONDS: i64 = 600;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
@@ -454,7 +456,7 @@ pub fn due_tasks(db: &Connection, account: &str, time: i64) -> Result<usize> {
 pub fn create_task(db: &mut Connection, account: &str, draft: TaskDraft) -> Result<String> {
     let title = name(&draft.title)?;
     if draft.due_at <= 0
-        || draft.due_at > 253_402_300_799
+        || draft.due_at > MAX_TASK_TIME
         || draft.description.chars().count() > 8_000
         || draft.workspace_ids.len() > 500
     {
@@ -513,16 +515,23 @@ pub fn list_tasks(db: &Connection, account: &str) -> Result<Vec<Task>> {
     rows.collect::<rusqlite::Result<_>>().map_err(db_error)
 }
 
-pub fn finish_task(db: &Connection, account: &str, id: &str, snooze: Option<i64>) -> Result<()> {
+pub fn finish_task(db: &Connection, account: &str, id: &str, snooze: bool) -> Result<()> {
     let time = now();
-    let changed = if let Some(until) = snooze {
-        if until <= time || until > 253_402_300_799 { return Err("Choose a future snooze time.".into()); }
-        db.execute("UPDATE tasks SET due_at=?3,fired_at=NULL WHERE account_id=?1 AND id=?2 AND completed_at IS NULL", params![account, id, until])
+    let changed = if snooze {
+        db.execute(
+            "UPDATE tasks SET due_at=MAX(due_at, ?3)+?4,fired_at=NULL
+             WHERE account_id=?1 AND id=?2 AND completed_at IS NULL AND MAX(due_at, ?3)<=?5",
+            params![account, id, time, SNOOZE_SECONDS, MAX_TASK_TIME - SNOOZE_SECONDS],
+        )
     } else {
         db.execute("UPDATE tasks SET completed_at=?3 WHERE account_id=?1 AND id=?2 AND completed_at IS NULL", params![account, id, time])
     }.map_err(db_error)?;
     if changed != 1 {
-        return Err("This reminder is already complete or does not exist.".into());
+        return Err(if snooze {
+            "This reminder is complete, does not exist, or cannot be postponed further."
+        } else {
+            "This reminder is already complete or does not exist."
+        }.into());
     }
     Ok(())
 }

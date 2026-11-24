@@ -866,6 +866,27 @@ mod tests {
     }
 
     #[test]
+    fn snoozing_a_future_reminder_extends_its_deadline() {
+        let test = tempfile::tempdir().unwrap();
+        let mut manager = Manager::new(test.path().into()).unwrap();
+        let due_at = catalog::now() + 3600;
+        let id = catalog::create_task(
+            manager.db_mut().unwrap(),
+            "local",
+            catalog::TaskDraft {
+                title: "Check later".into(),
+                description: "".into(),
+                due_at,
+                workspace_ids: vec![],
+            },
+        )
+        .unwrap();
+        let db = manager.db().unwrap();
+        catalog::finish_task(db, "local", &id, true).unwrap();
+        assert_eq!(catalog::list_tasks(db, "local").unwrap()[0].due_at, due_at + 600);
+    }
+
+    #[test]
     fn missed_shared_task_fires_once_across_relaunch() {
         let test = tempfile::tempdir().unwrap();
         let mut manager = Manager::new(test.path().into()).unwrap();

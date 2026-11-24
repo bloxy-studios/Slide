@@ -123,8 +123,8 @@ export function Tasks({ tasks, workspaces, run, busy }: { tasks: Reminder[]; wor
       {task.firedAt && <p>Marked due {localTime(task.firedAt)}.</p>}
     </div>
     {!task.completedAt && <div className="actions">
-      <button disabled={busy} onClick={() => run("finish_task", { id: task.id, snooze: Math.floor(Date.now() / 1000) + 600 }, "Snoozed for 10 minutes.")}>Snooze 10 min</button>
-      <button disabled={busy} onClick={() => run("finish_task", { id: task.id, snooze: null }, "Reminder completed.")}>Complete</button>
+      <button disabled={busy} onClick={() => run("finish_task", { id: task.id, snooze: true }, "Reminder postponed by 10 minutes.")}>Snooze 10 min</button>
+      <button disabled={busy} onClick={() => run("finish_task", { id: task.id, snooze: false }, "Reminder completed.")}>Complete</button>
     </div>}
   </li>)}</ul>;
 }
