@@ -1,12 +1,13 @@
 import { cookieFormat, exportFixtureCookie, importFixtureCookie, qaControls } from "./qa";
 
 const primary = "http://127.0.0.1:4310";
-const secondary = "http://127.0.0.1:4311";
+export const secondaryPort = 4311;
+const secondary = `http://127.0.0.1:${secondaryPort}`;
 export const qaPort = 4320;
 const roles = { creator: "Creator", viewer: "Viewer" } as const;
 type Role = keyof typeof roles;
 
-export function fixture(port = 4310, isolated = false) {
+export function fixture(port = 4310, isolated = false, secondOrigin: string | null = secondary) {
   return Bun.serve({
     hostname: "127.0.0.1",
     port,
@@ -62,7 +63,7 @@ export function fixture(port = 4310, isolated = false) {
       }
       const denied = url.pathname === "/creator" && cookie !== "creator";
       const content = isolated
-        ? `<h1>Second origin</h1><p>This origin reads its own DOM storage. Cookies are host scoped, not port scoped; this server ignores the login cookie.</p><a href="${primary}">Back to login origin</a>`
+        ? `<h1>Second origin</h1><p>This origin reads its own DOM storage. Cookies are host scoped, not port scoped; this server ignores the login cookie.</p><a href="${route === "proxy" ? `http://127.0.0.1:${qaPort}` : primary}">Back to login origin</a>`
         : url.pathname === "/creator"
           ? `<h1>${denied ? "Creator permission required" : "Creator-only fixture"}</h1><a href="/">Back to fixture</a>`
           : url.pathname === "/qa"
@@ -88,7 +89,7 @@ export function fixture(port = 4310, isolated = false) {
         <dl><dt>Cookie identity</dt><dd><code>${role ?? "signed out"}</code></dd>
         <dt>localStorage</dt><dd><code id="local">Checking…</code></dd>
         <dt>IndexedDB</dt><dd><code id="indexed">Checking…</code></dd></dl>
-        ${isolated ? "" : `<nav><a href="/">Home</a><a href="/creator">Creator-only page</a><a href="/bookmarks">Bookmarks</a><a href="${secondary}">Second origin</a><a href="/qa">QA fixture lab</a></nav>`}
+        ${isolated ? "" : `<nav><a href="/">Home</a><a href="/creator">Creator-only page</a><a href="/bookmarks">Bookmarks</a>${secondOrigin ? `<a href="${secondOrigin}">Second origin</a>` : ""}<a href="/qa">QA fixture lab</a></nav>`}
         ${url.pathname === "/qa" ? qaControls : ""}
         </main>
         <script>
@@ -117,11 +118,12 @@ export function fixture(port = 4310, isolated = false) {
 }
 
 if (import.meta.main) {
-  if (!process.argv.includes("--qa-only")) {
+  const qaOnly = process.argv.includes("--qa-only");
+  if (!qaOnly) {
     fixture();
-    fixture(4311, true);
+    fixture(secondaryPort, true);
     console.log(`Synthetic fixture: ${primary} (second origin: ${secondary})`);
   }
-  fixture(qaPort);
+  fixture(qaPort, false, qaOnly ? null : secondary);
   console.log(`Synthetic route fixture: http://127.0.0.1:${qaPort}/qa`);
 }

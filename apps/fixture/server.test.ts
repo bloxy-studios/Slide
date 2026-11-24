@@ -33,6 +33,17 @@ test("the second origin ignores synthetic login cookies", async () => {
   }
 });
 
+test("the QA-only fixture hides links to the absent second origin", async () => {
+  const server = fixture(0, false, null);
+  try {
+    const html = await (await fetch(new URL("/qa", server.url))).text();
+    expect(html).toContain("QA fixture lab");
+    expect(html).not.toContain(">Second origin<");
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("the owned fixture round-trips synthetic cookies in both formats and refuses unsupported attributes", async () => {
   const server = fixture(0);
   const url = new URL("/qa/cookie", server.url);

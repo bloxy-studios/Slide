@@ -5,7 +5,8 @@ import { fixture } from "./server";
 
 test("fixture proxy authenticates, marks the controlled route and rejects other origins", async () => {
   const server = fixture(0);
-  const proxy = fixtureProxy(0, server.port, true);
+  const second = fixture(0, true);
+  const proxy = fixtureProxy(0, server.port, true, second.port);
   try {
     await new Promise<void>(resolve => proxy.listening ? resolve() : proxy.once("listening", resolve));
     const address = proxy.address();
@@ -20,8 +21,12 @@ test("fixture proxy authenticates, marks the controlled route and rejects other 
     expect(await via(new URL("/route", server.url).href, "fixture:wrong")).toEqual([407, undefined]);
     expect(await via(new URL("/route", server.url).href, "fixture:fixture")).toEqual([200, "proxy"]);
     expect(await via("http://127.0.0.1:1/route", "fixture:fixture")).toEqual([403, undefined]);
+    expect(await via(second.url.href)).toEqual([407, undefined]);
+    expect(await via(second.url.href, "fixture:fixture")).toEqual([200, undefined]);
+    expect(await via(new URL("/creator", second.url).href, "fixture:fixture")).toEqual([404, undefined]);
   } finally {
     proxy.close();
     await server.stop(true);
+    await second.stop(true);
   }
 });

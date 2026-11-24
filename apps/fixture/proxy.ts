@@ -1,9 +1,9 @@
 import { createServer, request } from "node:http";
-import { qaPort } from "./server";
+import { qaPort, secondaryPort } from "./server";
 
-export function fixtureProxy(port = 4312, targetPort = qaPort, authenticate = false) {
+export function fixtureProxy(port = 4312, targetPort = qaPort, authenticate = false, secondPort = secondaryPort) {
   const expected = "Basic " + Buffer.from("fixture:fixture").toString("base64");
-  const targetOrigin = `http://127.0.0.1:${targetPort}`;
+  const destinations = new Map([targetPort, secondPort].map(port => [`http://127.0.0.1:${port}`, port]));
   return createServer((incoming, reply) => {
     let target: URL;
     try {
@@ -12,7 +12,8 @@ export function fixtureProxy(port = 4312, targetPort = qaPort, authenticate = fa
       reply.writeHead(400).end("Use an absolute fixture URL");
       return;
     }
-    if (target.origin !== targetOrigin || target.username || target.password ||
+    const destination = destinations.get(target.origin);
+    if (destination === undefined || target.username || target.password ||
         !["GET", "POST"].includes(incoming.method ?? "")) {
       reply.writeHead(403).end("This proxy only serves the local Slide fixture");
       return;
@@ -26,7 +27,7 @@ export function fixtureProxy(port = 4312, targetPort = qaPort, authenticate = fa
       const value = incoming.headers[key];
       if (typeof value === "string") headers[key] = value;
     }
-    const upstream = request({ hostname: "127.0.0.1", port: targetPort, path: target.pathname + target.search,
+    const upstream = request({ hostname: "127.0.0.1", port: destination, path: target.pathname + target.search,
       method: incoming.method, headers }, response => {
       reply.writeHead(response.statusCode ?? 502, response.headers);
       response.pipe(reply);

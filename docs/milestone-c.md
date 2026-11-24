@@ -2,7 +2,7 @@
 
 ## Start the controlled test lab
 
-From the repository root, start the fixture with `bun run fixture`. To run just the new lab without taking ports 4310 and 4311, use `bun apps/fixture/server.ts --qa-only`. In another terminal run `bun apps/fixture/proxy.ts --auth`. The proxy listens only on loopback and only forwards requests for the lab at `http://127.0.0.1:4320`. Its optional credentials are synthetic: username and password are both `fixture`. Never use real credentials in the test lab.
+From the repository root, start the fixture with `bun run fixture`. To run just the new lab without taking ports 4310 and 4311, use `bun apps/fixture/server.ts --qa-only`; this mode hides the second-origin link. In another terminal run `bun apps/fixture/proxy.ts --auth`. The proxy listens only on loopback and allows only the lab at `http://127.0.0.1:4320` and the second fixture origin at `http://127.0.0.1:4311` when the full fixture is running. Its optional credentials are synthetic: username and password are both `fixture`. Never use real credentials in the test lab.
 
 In the installed manager, open **Connections**, save `http://127.0.0.1:4312` as **Fixture HTTP**, and select it in **Test controlled fixture route**. A rejected password yields a proxy authentication error; the synthetic credentials yield `Fixture route confirmed: proxy`. The Direct check yields `Fixture route confirmed: direct`. These are manager probes; they do not test Chromium. For CSV use columns `name,endpoint`, at most 100 rows; any invalid row rejects the whole batch.
 
