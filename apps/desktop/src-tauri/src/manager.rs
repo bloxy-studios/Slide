@@ -1036,6 +1036,37 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn legacy_upgrade_defaults_to_bundle_unless_a_browser_was_chosen() {
+        for chosen in [false, true] {
+            let test = tempfile::tempdir().unwrap();
+            let bundled = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", "160.0.8182.0");
+            let chrome = mac_browser(test.path(), "Google Chrome", "com.google.Chrome", "158.0.8127.36");
+            let chrome = Chromium::inspect(&chrome).unwrap();
+            let db = Connection::open(test.path().join("catalog.sqlite3")).unwrap();
+            db.execute_batch(include_str!("../migrations/001_workspaces.sql")).unwrap();
+            db.execute_batch(include_str!("../migrations/002_catalog.sql")).unwrap();
+            db.pragma_update(None, "user_version", 2).unwrap();
+            if chosen {
+                db.execute(
+                    "INSERT INTO runtime_settings (singleton, path) VALUES (1, ?1)",
+                    [chrome.path.to_str().unwrap()],
+                )
+                .unwrap();
+            }
+            drop(db);
+
+            let manager = Manager::with_bundle(test.path().into(), Some(bundled)).unwrap();
+            let runtime = manager.runtime.as_ref().unwrap();
+            if chosen {
+                assert_eq!(runtime.path, chrome.path);
+            } else {
+                assert!(runtime.bundled);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn persisted_chrome_profile_keeps_chrome_when_bundled_is_selected() {
         let test = tempfile::tempdir().unwrap();
         let bundled = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", "160.0.8182.0");
