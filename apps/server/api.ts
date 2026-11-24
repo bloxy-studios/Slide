@@ -384,13 +384,16 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90) {
         case "exchange": {
           owner(row);
           if (row.active) fail(409, "Release the workspace lease before exchange.");
-          const recipient = uuid(data.accountId), version = integer(data.version, 1, row.generation);
+          if ((data.email === undefined) === (data.accountId === undefined)) fail(400, "Provide one recipient email or account ID.");
+          const version = integer(data.version, 1, row.generation);
           const ttl = data.expiresIn === undefined ? 900 : integer(data.expiresIn, 1, 3600);
-          const [account] = await tx`SELECT id FROM accounts WHERE id=${recipient}`;
-          if (!account || recipient === actor.id) fail(400, "Choose a different existing account.");
+          const [account] = data.email === undefined
+            ? await tx`SELECT id FROM accounts WHERE id=${uuid(data.accountId)}`
+            : await tx`SELECT id FROM accounts WHERE email=${email(data.email)}`;
+          if (!account || account.id === actor.id) fail(400, "Choose a different existing account.");
           const ticket = secret();
           const [issued] = await tx`INSERT INTO exchange_tickets (digest,workspace_id,version,recipient_id,expires_at)
-            VALUES (${hash(ticket)},${id},${version},${recipient},clock_timestamp() + ${ttl} * interval '1 second')
+            VALUES (${hash(ticket)},${id},${version},${account.id},clock_timestamp() + ${ttl} * interval '1 second')
             RETURNING expires_at AS "expiresAt"`;
           await audit(tx, actor, row.teamId, id, "exchange.issue");
           return { ticket, expiresAt: issued.expiresAt };

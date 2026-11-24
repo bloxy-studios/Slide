@@ -68,6 +68,7 @@ export function Cloud({ account, workspaces, refresh }: {
   const [passphrase, setPassphrase] = useState("");
   const [ticket, setTicket] = useState("");
   const [issuedTicket, setIssuedTicket] = useState("");
+  const [exchangeRecipient, setExchangeRecipient] = useState("");
   const [pendingUpload, setPendingUpload] = useState<Upload>();
   const [confirmation, setConfirmation] = useState<Confirmation>();
   const confirmationDialog = useRef<HTMLDialogElement>(null);
@@ -115,7 +116,7 @@ export function Cloud({ account, workspaces, refresh }: {
 
   useEffect(() => {
     let active = true;
-    setLease(undefined); setRevisions([]); setVersion(""); setIssuedTicket("");
+    setLease(undefined); setRevisions([]); setVersion(""); setIssuedTicket(""); setExchangeRecipient("");
     if (token && workspaceId) Promise.all([
       api<LeaseState>(path + "/lease", token), api<Revision[]>(path + "/snapshots", token),
     ]).then(([nextLease, history]) => {
@@ -274,11 +275,16 @@ export function Cloud({ account, workspaces, refresh }: {
                 await lists(session.token); setNotice("Ownership transferred.");
               },
             })}>Transfer ownership</button>
-            <button disabled={busy || !memberId || !!lease?.lease || !version || teamId !== workspace.teamId} onClick={() => void run(async () => {
-              const result = await api<{ ticket: string }>(path + "/exchange", token, "POST", { accountId: memberId, version: Number(version) });
-              setIssuedTicket(result.ticket);
-            })}>Create exchange ticket</button>
           </div>
+          <label>Exchange recipient email or account ID<input maxLength={254} value={exchangeRecipient}
+            onChange={e => { setExchangeRecipient(e.target.value); setIssuedTicket(""); }} /></label>
+          <button disabled={busy || !exchangeRecipient.trim() || !!lease?.lease || !version} onClick={() => void run(async () => {
+            const recipient = exchangeRecipient.trim();
+            const result = await api<{ ticket: string }>(path + "/exchange", token, "POST", {
+              ...(recipient.includes("@") ? { email: recipient } : { accountId: recipient }), version: Number(version),
+            });
+            setIssuedTicket(result.ticket);
+          })}>Create exchange ticket</button>
           {issuedTicket && <p>Single-use ticket: <code>{issuedTicket}</code>. Send it separately from the snapshot passphrase.</p>}
         </>}
         <h3>Encrypted metadata snapshots</h3>

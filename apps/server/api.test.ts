@@ -150,6 +150,12 @@ test.skipIf(!url)("encrypted handoff verifies bytes, retains versions, and fence
   expect((await call("/exchange/redeem", "POST", alice.token, { ticket, teamId: team.id })).status).toBe(404);
   const race = await Promise.all([1, 2].map(() => call("/exchange/redeem", "POST", bob.token, { ticket, teamId: team.id })));
   expect(race.map(reply => reply.status).sort()).toEqual([200, 404]);
+  const external = await account();
+  const destination = await ok("/teams", "POST", external.token, { name: "Destination team" });
+  expect((await call(path + "/exchange", "POST", alice.token, { email: "missing@slide.test", version: 1 })).status).toBe(400);
+  expect((await call(path + "/exchange", "POST", alice.token, { email: external.account.email, accountId: external.account.id, version: 1 })).status).toBe(400);
+  const externalInvite = await ok(path + "/exchange", "POST", alice.token, { email: external.account.email.toUpperCase(), version: 1 });
+  expect((await ok("/exchange/redeem", "POST", external.token, { ticket: externalInvite.ticket, teamId: destination.id })).teamId).toBe(destination.id);
   await ok(path + "/transfer", "POST", alice.token, { accountId: bob.account.id });
   expect((await call(path + "/snapshots/1", "GET", alice.token)).status).toBe(404);
   const c = await ok(path + "/lease", "POST", bob.token, { operation: "acquire" });
