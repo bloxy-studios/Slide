@@ -13,6 +13,8 @@ use std::{
 use tauri::{AppHandle, Manager as _};
 use uuid::Uuid;
 
+const MAX_CONNECTIONS: usize = 8;
+
 #[derive(Default)]
 pub struct Bridge(Mutex<Option<Listener>>);
 
@@ -201,16 +203,34 @@ fn process(app: &AppHandle, stream: &mut TcpStream, peer: SocketAddr, port: u16,
 }
 
 fn serve(app: AppHandle, listener: TcpListener, port: u16, stop: Arc<AtomicBool>) {
+    serve_connections(listener, stop.clone(), move |mut stream, peer| {
+        let (code, body) = process(&app, &mut stream, peer, port, &stop);
+        let body = body.to_string();
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+        let _ = write!(stream, "HTTP/1.1 {code} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+            match code { 200 => "OK", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found",
+                409 => "Conflict", _ => "Service Unavailable" }, body.len(), body);
+    });
+}
+
+fn serve_connections(
+    listener: TcpListener,
+    stop: Arc<AtomicBool>,
+    handle: impl Fn(TcpStream, SocketAddr) + Send + Sync + 'static,
+) {
+    let handle = Arc::new(handle);
+    let mut workers = Vec::with_capacity(MAX_CONNECTIONS);
     while !stop.load(Ordering::Acquire) {
+        workers.retain(|worker: &std::thread::JoinHandle<()>| !worker.is_finished());
         match listener.accept() {
-            Ok((mut stream, peer)) => {
-                let (code, body) = process(&app, &mut stream, peer, port, &stop);
-                let body = body.to_string();
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                let _ = write!(stream, "HTTP/1.1 {code} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
-                    match code { 200 => "OK", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found",
-                        409 => "Conflict", _ => "Service Unavailable" }, body.len(), body);
+            Ok((stream, peer)) if workers.len() < MAX_CONNECTIONS => {
+                let handle = handle.clone();
+                if let Ok(worker) = std::thread::Builder::new().name("slide-automation-request".into())
+                    .spawn(move || handle(stream, peer)) {
+                    workers.push(worker);
+                }
             }
+            Ok(_) => (),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(25)),
             Err(_) => break,
         }
@@ -220,6 +240,35 @@ fn serve(app: AppHandle, listener: TcpListener, port: u16, stop: Arc<AtomicBool>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_handles_other_connections_while_one_handler_is_busy() {
+        use std::sync::mpsc;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = stop.clone();
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let blocked = Mutex::new(Some(blocked));
+        let server = std::thread::spawn(move || serve_connections(listener, server_stop, move |_, _| {
+            let first = blocked.lock().unwrap().take();
+            entered.send(()).unwrap();
+            if let Some(first) = first { let _ = first.recv(); }
+        }));
+
+        let idle = TcpStream::connect(address).unwrap();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let ready = TcpStream::connect(address).unwrap();
+        let served_before_release = started.recv_timeout(Duration::from_secs(2));
+        release.send(()).unwrap();
+        stop.store(true, Ordering::Release);
+        drop((idle, ready));
+        server.join().unwrap();
+        served_before_release.unwrap();
+    }
 
     #[test]
     fn bridge_rejects_non_loopback_dns_rebinding_web_origins_and_bad_tokens() {
