@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Connections } from "./connections";
+import { Cloud } from "./cloud";
 import { Diagnostics } from "./diagnostics";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -11,7 +12,7 @@ import { Checklist, ExtensionForm, kinds, LibraryForm, TaskForm, Tasks, Workspac
 import type { LibraryItem, LibraryKind, Run } from "./forms";
 import "./style.css";
 
-type Tab = "Workspaces" | "Library" | "Connections" | "Reminders" | "Import" | "Extensions" | "Diagnostics" | "Trash";
+type Tab = "Workspaces" | "Library" | "Shared" | "Connections" | "Reminders" | "Import" | "Extensions" | "Diagnostics" | "Trash";
 type WorkspaceMode = "manual" | "quick" | "template" | "clone" | "edit";
 type BatchAction = "open" | "close" | "tag" | "folder" | "network" | "trash" | "restore" | "purge";
 type ExtensionInstallOptions = { bundled: boolean; installedVersion: string | null; updateAvailable: boolean };
@@ -25,7 +26,7 @@ type Modal =
   | { type: "account" | "task" }
   | { type: "confirm"; title: string; detail: string; confirm: () => void };
 
-const tabs: Tab[] = ["Workspaces", "Library", "Connections", "Reminders", "Import", "Extensions", "Diagnostics", "Trash"];
+const tabs: Tab[] = ["Workspaces", "Library", "Shared", "Connections", "Reminders", "Import", "Extensions", "Diagnostics", "Trash"];
 const batchLabels: Record<BatchAction, string> = {
   open: "Open", close: "Close", tag: "Add tag", folder: "Move to folder",
   network: "Test fixture route", trash: "Move to trash", restore: "Restore", purge: "Permanently delete",
@@ -461,6 +462,8 @@ function App() {
       </section>}
       {tab === "Connections" && <Connections key={catalog.activeAccount} account={catalog.activeAccount}
         entries={catalog.connections} workspaces={data.workspaces} run={command} disabled={disabled} />}
+      <div hidden={tab !== "Shared"}><Cloud key={catalog.activeAccount} account={catalog.activeAccount}
+        workspaces={data.workspaces} refresh={refresh} /></div>
       {tab === "Diagnostics" && <Diagnostics {...data} />}
       {tab === "Extensions" && <section>
         <div className="section-heading"><h2>Extension catalog</h2><button className="primary" disabled={disabled} onClick={() => show({ type: "extension" })}>Add extension</button></div>
