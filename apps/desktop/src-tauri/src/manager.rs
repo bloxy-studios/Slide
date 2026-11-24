@@ -552,8 +552,13 @@ impl Manager {
         let observation = self.chromium.observe(&directory);
         let (status, identity) = match &observation {
             Observation::Session(session) => {
-                if workspace.browser.as_ref().is_none_or(|browser| browser.version.is_none())
+                let (status, ended) = session_status(session, transition);
+                let needs_record = workspace.browser.as_ref().is_none_or(|browser| browser.version.is_none())
                     || old_identity != Some(session.identity)
+                    || transition.is_some_and(|t| t.status == Status::Starting);
+                if matches!(status, Status::Running | Status::Background)
+                    && needs_record
+                    && self.chromium.verified(&directory, session.identity).is_ok()
                 {
                     if let Ok(runtime) = Chromium::inspect(&session.executable) {
                         if workspace.browser.as_ref().is_none_or(|browser| {
@@ -569,7 +574,6 @@ impl Manager {
                         }
                     }
                 }
-                let (status, ended) = session_status(session, transition);
                 if ended {
                     if transition.is_some_and(|t| t.status == Status::Closing && session.window) {
                         workspace.detail = Some(
@@ -579,7 +583,14 @@ impl Manager {
                     self.transitions.remove(&workspace.id);
                 }
                 exit_note = None;
-                (status, Some(session.identity))
+                (
+                    status,
+                    if status == Status::Starting {
+                        old_identity
+                    } else {
+                        Some(session.identity)
+                    },
+                )
             }
             Observation::Locked(reason) => {
                 if let Some(t) = transition.filter(|t| t.since.elapsed() < TRANSITION_TIMEOUT) {
@@ -755,7 +766,7 @@ impl Manager {
                 let directory = prepare_directory(&root, &directory)?;
                 let reopen = workspace.status == Status::Background;
                 let active = reopen || workspace.status == Status::Running;
-                let executable = if active {
+                let (executable, should_seed) = if active {
                     let Observation::Session(session) = self.chromium.observe(&directory) else {
                         return Err("The browser changed. Retry opening the workspace.".into());
                     };
@@ -766,14 +777,10 @@ impl Manager {
                             return Err(browser.unavailable());
                         }
                     }
-                    session.executable
+                    (session.executable, false)
                 } else {
                     let runtime = self.profile_runtime(&workspace, &directory)?;
-                    self.record_browser(id, &runtime)?;
-                    if runtime.bundled {
-                        seed_profile(&directory, &workspace.name)?;
-                    }
-                    runtime.path
+                    (runtime.path, runtime.bundled)
                 };
                 self.catalog()?
                     .db
@@ -783,7 +790,13 @@ impl Manager {
                     workspace.settings.launch_urls.as_slice(),
                     std::slice::from_ref,
                 );
-                let child = Chromium::launch(&executable, &directory, urls, reopen)?;
+                let seeded = should_seed && seed_profile(&directory, &workspace.name)?;
+                let child = Chromium::launch(&executable, &directory, urls, reopen).map_err(|error| {
+                    if seeded {
+                        remove_profile_seed(&directory.join("Default"));
+                    }
+                    error
+                })?;
                 self.children
                     .entry(id.into())
                     .or_default()
@@ -865,10 +878,10 @@ fn profile_directory_is_empty(directory: &Path) -> Result<bool, String> {
         .map_err(|error| format!("Could not inspect the workspace directory: {error}"))
 }
 
-fn seed_profile(directory: &Path, name: &str) -> Result<(), String> {
-    let first_run = (|| -> std::io::Result<()> {
+fn seed_profile(directory: &Path, name: &str) -> Result<bool, String> {
+    let first_run = (|| -> std::io::Result<bool> {
         if fs::read_dir(directory)?.next().transpose()?.is_some() {
-            return Ok(());
+            return Ok(false);
         }
         let profile = directory.join("Default");
         fs::create_dir(&profile)?;
@@ -879,12 +892,16 @@ fn seed_profile(directory: &Path, name: &str) -> Result<(), String> {
             Ok(())
         })();
         if result.is_err() {
-            let _ = fs::remove_file(profile.join("Preferences"));
-            let _ = fs::remove_dir(&profile);
+            remove_profile_seed(&profile);
         }
-        result
+        result.map(|()| true)
     })();
     first_run.map_err(|error| format!("Could not initialize the Chromium profile: {error}"))
+}
+
+fn remove_profile_seed(profile: &Path) {
+    let _ = fs::remove_file(profile.join("Preferences"));
+    let _ = fs::remove_dir(profile);
 }
 
 fn checked_directory(root: &Path, directory: &Path) -> Result<PathBuf, String> {
@@ -1030,6 +1047,37 @@ mod tests {
             assert_eq!(runtime.version, available);
             assert!(runtime.bundled);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_launch_keeps_the_last_verified_browser_version() {
+        let test = tempfile::tempdir().unwrap();
+        let previous = mac_browser(test.path(), "Chromium", "org.chromium.Chromium", "160.0.8182.0");
+        let bundled = mac_browser(
+            &test.path().join("bundle"),
+            "Chromium",
+            "org.chromium.Chromium",
+            "161.0.8200.0",
+        );
+        let mut manager = Manager::with_bundle(test.path().into(), Some(bundled)).unwrap();
+        let id = insert_workspace(manager.db().unwrap(), "local", "Creator", Settings::default())
+            .unwrap();
+        let runtime = Chromium::inspect(&previous).unwrap();
+        manager.record_browser(&id, &runtime).unwrap();
+        let removed = test.path().join("Removed.app");
+        fs::rename(&previous, &removed).unwrap();
+
+        let error = manager.perform(&id, Operation::Open).unwrap_err();
+        assert!(error.contains("Could not launch the browser"));
+
+        fs::rename(&removed, &previous).unwrap();
+        let workspace = manager.rows("local", Some(&id)).unwrap().pop().unwrap();
+        let directory = manager.directory(&id).unwrap();
+        assert!(profile_directory_is_empty(&directory).unwrap());
+        let recovered = manager.profile_runtime(&workspace, &directory).unwrap();
+        assert_eq!(recovered.version, runtime.version);
+        assert_eq!(recovered.path, runtime.path);
     }
 
     #[test]
