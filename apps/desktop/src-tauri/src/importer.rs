@@ -2,7 +2,7 @@ use crate::{
     catalog::{self, Settings},
     manager::{db_error, insert_workspace},
 };
-use calamine::{open_workbook_from_rs, Reader, Xlsx};
+use calamine::{open_workbook_from_rs, Data, DataRef, Reader, Xlsx};
 use quick_xml::{events::Event, Reader as XmlReader};
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -189,24 +189,53 @@ fn xlsx(bytes: &[u8]) -> Result<Vec<(usize, Vec<String>)>, String> {
     }
     let mut book: Xlsx<_> =
         open_workbook_from_rs(Cursor::new(bytes)).map_err(|e| format!("Invalid workbook: {e}"))?;
-    let sheet = book
-        .worksheet_range_at(0)
-        .ok_or("The workbook has no worksheets.")?
-        .map_err(|e| format!("Could not read the first sheet: {e}"))?;
-    let Some((row, col)) = sheet.start() else {
-        return Ok(Vec::new());
-    };
-    if sheet.height() > ROW_LIMIT + 1 || sheet.width() > COLUMN_LIMIT {
-        return Err("Worksheet is too large.".into());
+    worksheet_rows(&mut book, XLSX_LIMIT as usize)
+}
+
+fn worksheet_rows(
+    book: &mut Xlsx<Cursor<&[u8]>>,
+    mut remaining: usize,
+) -> Result<Vec<(usize, Vec<String>)>, String> {
+    let name = book
+        .sheet_names()
+        .into_iter()
+        .next()
+        .ok_or("The workbook has no worksheets.")?;
+    let read_error = |e| format!("Could not read the first sheet: {e}");
+    let mut sheet = book.worksheet_cells_reader(&name).map_err(read_error)?;
+    let mut rows = vec![Vec::new(); ROW_LIMIT + 1];
+    let mut cell_count = 0;
+    while let Some(cell) = sheet.next_cell().map_err(read_error)? {
+        let (row, col) = cell.get_position();
+        let (row, col) = (row as usize, col as usize);
+        cell_count += 1;
+        if row > ROW_LIMIT || col >= COLUMN_LIMIT || cell_count > (ROW_LIMIT + 1) * COLUMN_LIMIT {
+            return Err("Worksheet is too large.".into());
+        }
+        let value = match cell.get_value() {
+            DataRef::Empty => continue,
+            DataRef::SharedString(value) => {
+                if value.len() > remaining {
+                    return Err("Expanded worksheet cell data exceeds 16 MiB.".into());
+                }
+                (*value).to_owned()
+            }
+            value => Data::from(value.clone()).to_string(),
+        };
+        remaining = remaining
+            .checked_sub(value.len())
+            .ok_or("Expanded worksheet cell data exceeds 16 MiB.")?;
+        let fields = &mut rows[row];
+        if fields.len() <= col {
+            fields.resize(col + 1, String::new());
+        }
+        fields[col] = value;
     }
-    Ok(sheet
-        .rows()
+    Ok(rows
+        .into_iter()
         .enumerate()
-        .map(|(i, fields)| {
-            let mut values = vec![String::new(); col as usize];
-            values.extend(fields.iter().map(ToString::to_string));
-            (row as usize + i + 1, values)
-        })
+        .filter(|(_, fields)| !fields.is_empty())
+        .map(|(row, fields)| (row + 1, fields))
         .collect())
 }
 
@@ -383,6 +412,28 @@ mod tests {
     use super::*;
     use crate::manager::Manager;
     use std::io::Write;
+
+    #[test]
+    fn shared_strings_count_toward_the_budget_per_cell() {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let files = [
+            ("_rels/.rels", r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#),
+            ("xl/workbook.xml", r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Workspaces" sheetId="1" r:id="rId1"></sheet></sheets></workbook>"#),
+            ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#),
+            ("xl/sharedStrings.xml", "<sst><si><t>Example</t></si></sst>"),
+            ("xl/worksheets/sheet1.xml", r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="s"><v>0</v></c></row></sheetData></worksheet>"#),
+        ];
+        for (path, xml) in files {
+            archive.start_file(path, zip::write::SimpleFileOptions::default()).unwrap();
+            archive.write_all(xml.as_bytes()).unwrap();
+        }
+        let bytes = archive.finish().unwrap().into_inner();
+        let mut book = open_workbook_from_rs(Cursor::new(bytes.as_slice())).unwrap();
+        assert_eq!(worksheet_rows(&mut book, 14).unwrap(), vec![
+            (1, vec!["Example".to_owned()]), (2, vec!["Example".to_owned()]),
+        ]);
+        assert!(worksheet_rows(&mut book, 13).unwrap_err().contains("Expanded worksheet cell data"));
+    }
 
     #[test]
     fn csv_preview_checks_unicode_quotes_duplicates_and_idempotency() {
