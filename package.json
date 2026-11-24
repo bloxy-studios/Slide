@@ -1,0 +1,11 @@
+{
+  "name": "slide-workspaces",
+  "private": true,
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "dev": "bun run --parallel fixture desktop",
+    "desktop": "bun run --cwd apps/desktop tauri dev",
+    "fixture": "bun apps/fixture/server.ts",
+    "test": "bun test apps/fixture"
+  }
+}
