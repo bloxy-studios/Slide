@@ -353,6 +353,7 @@ impl Manager {
             None if entry.source == "fixture" => crx::fixture(&entry.version)?,
             None => return Err("Choose a downloaded CRX file.".into()),
         };
+        package.require_compatible_runtime(&runtime.version)?;
         let token = Uuid::new_v4();
         let review = package.review.clone();
         self.crx_review = Some((token, account.into(), id.into(), extension.into(), package));
@@ -369,6 +370,7 @@ impl Manager {
         {
             return Err("The workspace or catalog changed. Review this extension again.".into());
         }
+        package.require_compatible_runtime(&runtime.version)?;
         if crx::installed(self.db()?, &id, &extension)?
             .filter(|installed| installed.browser_id == package.review.browser_id)
             .and_then(|installed| crx::version(&installed.version))
@@ -1199,6 +1201,25 @@ mod tests {
         assert!(options.update_available);
         let (token, review) = manager.review_crx("local", &id, &extension, None).unwrap();
         assert_eq!(review.version, "1.0.1");
+        manager.crx_review.as_mut().unwrap().4.minimum_chrome_version = Some("158".into());
+        let error = manager.approve_crx("local", token).unwrap_err();
+        assert!(error.contains("requires Chromium 158 or newer"));
+        assert!(path.join("badge.js").is_file());
+        assert_eq!(crx::installed(manager.db().unwrap(), &id, &extension).unwrap().unwrap().version, "1.0.0");
+
+        manager.db().unwrap().execute_batch(
+            "CREATE TRIGGER reject_crx_update BEFORE UPDATE ON workspace_crx
+             BEGIN SELECT RAISE(ABORT, 'test: replacement rejected'); END;"
+        ).unwrap();
+        let (token, _) = manager.review_crx("local", &id, &extension, None).unwrap();
+        assert!(manager.approve_crx("local", token).unwrap_err().contains("test: replacement rejected"));
+        assert!(path.join("badge.js").is_file());
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(crx::installed(manager.db().unwrap(), &id, &extension).unwrap().unwrap().version, "1.0.0");
+        manager.db().unwrap().execute_batch("DROP TRIGGER reject_crx_update;").unwrap();
+
+        let (token, _) = manager.review_crx("local", &id, &extension, None).unwrap();
+        manager.crx_review.as_mut().unwrap().4.minimum_chrome_version = Some("157.0".into());
         assert!(path.is_dir());
         manager.approve_crx("local", token).unwrap();
         assert!(!path.exists());

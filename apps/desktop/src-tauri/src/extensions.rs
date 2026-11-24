@@ -23,6 +23,7 @@ pub struct Manifest {
     manifest_version: u32,
     pub name: String,
     pub version: String,
+    pub minimum_chrome_version: Option<String>,
     #[serde(default)]
     permissions: Vec<String>,
     #[serde(default)]

@@ -51,7 +51,41 @@ pub struct Review {
 
 pub struct Package {
     pub review: Review,
-    pub files: Vec<(PathBuf, Vec<u8>)>,
+    pub minimum_chrome_version: Option<String>,
+    files: Vec<(PathBuf, Vec<u8>)>,
+}
+
+impl Package {
+    pub fn require_compatible_runtime(&self, runtime: &str) -> Result<(), String> {
+        fn components(version: &str) -> Option<Vec<u32>> {
+            let mut parts = version
+                .split('.')
+                .map(|part| {
+                    if part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()) {
+                        return None;
+                    }
+                    part.parse().ok()
+                })
+                .collect::<Option<Vec<_>>>()?;
+            while parts.last() == Some(&0) {
+                parts.pop();
+            }
+            Some(parts)
+        }
+        let Some(minimum) = self.minimum_chrome_version.as_deref() else {
+            return Ok(());
+        };
+        let minimum_parts =
+            components(minimum).ok_or("Invalid minimum_chrome_version in the CRX manifest.")?;
+        let runtime_parts =
+            components(runtime).ok_or("Could not verify the workspace Chromium version.")?;
+        if runtime_parts < minimum_parts {
+            return Err(format!(
+                "This CRX requires Chromium {minimum} or newer; this workspace uses {runtime}."
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -270,6 +304,7 @@ fn inspect(bytes: &[u8], id: &str, pin: &str) -> Result<Package, String> {
             manifest.version
         ));
     }
+    let minimum_chrome_version = manifest.minimum_chrome_version.clone();
     let review = Review {
         name: crate::catalog::name(&manifest.name)?.to_owned(),
         version: manifest.version.clone(),
@@ -285,7 +320,11 @@ fn inspect(bytes: &[u8], id: &str, pin: &str) -> Result<Package, String> {
     manifest["key"] = STANDARD.encode(&proof.key).into();
     *bytes =
         serde_json::to_vec(&manifest).map_err(|_| "Could not prepare the extension manifest.")?;
-    Ok(Package { review, files })
+    Ok(Package {
+        review,
+        minimum_chrome_version,
+        files,
+    })
 }
 
 #[cfg(test)]
