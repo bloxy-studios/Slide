@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "windows": {
+      "wix": { "template": "wix-main.wxs" }
+    }
+  }
+}

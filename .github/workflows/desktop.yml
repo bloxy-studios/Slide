@@ -47,7 +47,7 @@ jobs:
       - run: bun run test
       - run: bun run --cwd apps/desktop build
       - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
-      - run: bun run --cwd apps/desktop tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - run: bun run --cwd apps/desktop bundle --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
       - if: runner.os == 'macOS'
         run: tar -czf "Slide Workspaces.app.tar.gz" -C "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos" "Slide Workspaces.app"
       - uses: actions/upload-artifact@v4

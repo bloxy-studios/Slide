@@ -1,6 +1,6 @@
 # Milestone B: local workspace management
 
-Run `bun install --frozen-lockfile` and `bun run dev` from the repository root. To build a Mac installer, run `bun run --cwd apps/desktop tauri build --ci --bundles app,dmg`. The app opens the installed Chrome or Chromium in a normal browser window using a separate data directory for each workspace.
+Run `bun install --frozen-lockfile` and `bun run dev` from the repository root to use an installed browser. To build a Mac installer with Chromium included, run `bun run --cwd apps/desktop bundle --ci --bundles app,dmg`. Each workspace uses a separate browser data directory and a normal browser window. The installed-app results below are from Milestone B before Chromium was bundled.
 
 ## Local behavior
 

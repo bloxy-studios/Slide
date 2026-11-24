@@ -1,4 +1,4 @@
-export type Runtime = { path: string; brand: string; version: string; architecture: string };
+export type Runtime = { path: string; brand: string; version: string; architecture: string; bundled: boolean };
 export type Status = keyof typeof statusLabels;
 export const statusLabels = {
   closed: "Closed", running: "Running", background: "No open window", starting: "Opening…",
@@ -41,7 +41,7 @@ export type Catalog = {
   activeAccount: string; accounts: Label[]; folders: Label[]; tags: Tag[]; bookmarks: Bookmark[];
   templates: Template[]; extensions: Extension[]; tasks: Reminder[]; defaultTemplate: string | null; view: View;
 };
-export type Snapshot = { runtime: Runtime | null; runtimeError: string | null; workspaces: Workspace[]; catalog: Catalog };
+export type Snapshot = { runtime: Runtime | null; runtimeError: string | null; hasBundledRuntime: boolean; workspaces: Workspace[]; catalog: Catalog };
 export type PreviewRow = { number: number; name: string; duplicate: boolean; completed: boolean; error: string | null };
 export type Preview = { fingerprint: string; rows: PreviewRow[] };
 

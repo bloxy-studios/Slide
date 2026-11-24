@@ -284,13 +284,13 @@ function App() {
       <div>
         <div className="eyebrow" id="runtime-title">BROWSER RUNTIME</div>
         {data?.runtime ? <>
-          <h2>{data.runtime.brand} <span className="version">{data.runtime.version} · {data.runtime.architecture}</span></h2><p className="path">{data.runtime.path}</p>
+          <h2>{data.runtime.bundled ? "Bundled " : ""}{data.runtime.brand} <span className="version">{data.runtime.version} · {data.runtime.architecture}</span></h2><p className="path">{data.runtime.path}</p>
         </> : <>
-          <h2>{data ? "Set up your browser" : "Checking installed browsers…"}</h2>
-          <p>{data?.runtimeError ?? "Workspaces open in an installed Google Chrome or Chromium browser."}</p>
+          <h2>{data ? "Set up your browser" : "Checking browser runtime…"}</h2>
+          <p>{data?.runtimeError ?? "Workspaces open in Chromium by default."}</p>
         </>}
       </div>
-      {data?.runtime && <button type="button" disabled={disabled} onClick={() => { setPath(data.runtime!.path); showRuntimeEditor(!runtimeEditor); }} aria-expanded={runtimeEditor}>Change browser</button>}
+      {data?.runtime && <button type="button" disabled={disabled} onClick={() => { setPath(data.runtime!.bundled ? "" : data.runtime!.path); showRuntimeEditor(!runtimeEditor); }} aria-expanded={runtimeEditor}>Choose another browser</button>}
       {data && (!data.runtime || runtimeEditor) && <form className="runtime-path" onSubmit={pickRuntime}>
         <label>Chrome or Chromium path<input required value={path} onChange={event => setPath(event.target.value)} placeholder="Path to the browser application" /></label>
         <button type="button" disabled={disabled} onClick={async () => {
@@ -299,6 +299,12 @@ function App() {
             if (typeof selected === "string") setPath(selected);
           } catch (e) { setError(String(e)); }
         }}>Browse…</button><button disabled={disabled} type="submit">Use browser</button>
+        {data.hasBundledRuntime && !data.runtime?.bundled && <button type="button" disabled={disabled} onClick={() => {
+          void run(async () => {
+            await invoke("use_bundled_runtime");
+            showRuntimeEditor(false);
+          }, "Bundled Chromium selected.");
+        }}>Use bundled Chromium</button>}
       </form>}
     </section>
     <p className="announcement error" role="alert">{!modal && error}</p>
@@ -367,7 +373,7 @@ function App() {
                 {trash ? <div className="actions"><button disabled={disabled} onClick={() => beginWorkspaceBatch([row], "restore")}>Restore</button>
                   <button disabled={disabled} onClick={() => beginWorkspaceBatch([row], "purge")}>Permanently delete</button></div> :
                   <><div className="actions" aria-label={`Actions for ${row.name}`}>
-                    <button className="primary" disabled={pending || (!data?.runtime && !running) || row.status === "locked"} onClick={() => action(row, "open")}>Open</button>
+                    <button className="primary" disabled={pending || row.status === "locked"} onClick={() => action(row, "open")}>Open</button>
                     <button disabled={pending || row.status !== "running"} onClick={() => action(row, "focus")}>Focus</button>
                     <button disabled={pending || !row.canClose} onClick={() => action(row, "close")}>Close</button>
                   </div>
