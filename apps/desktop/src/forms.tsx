@@ -28,6 +28,7 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
   const [urlText, setUrlText] = useState(value.launchUrls.join("\n"));
   const set = (changes: Partial<Settings>) => change({ ...value, ...changes });
   return <>
+    <details className="profile-section" open><summary>Basic information</summary>
     <div className="form-grid">
       <label>Icon (emoji or text)<input value={value.icon} maxLength={12} onChange={e => set({ icon: e.target.value })} placeholder="e.g. 🌱" /></label>
       <label>Folder<select value={value.folderId ?? ""} onChange={e => set({ folderId: e.target.value || null })}>
@@ -35,8 +36,12 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
       </select></label>
     </div>
     <label>Notes<textarea rows={2} value={value.notes} maxLength={8000} onChange={e => set({ notes: e.target.value })} /></label>
+    </details>
+    <details className="profile-section"><summary>Browser startup</summary>
     <label>Launch URLs (one HTTP(S) URL per line)<textarea rows={2} value={urlText} placeholder="http://127.0.0.1:4310"
       onChange={e => { setUrlText(e.target.value); set({ launchUrls: e.target.value.split("\n").filter(url => url.trim()) }); }} /></label>
+    </details>
+    <details className="profile-section"><summary>Proxy</summary>
     <label>Connection<select value={value.connection.mode === "saved" ? value.connection.id : value.connection.mode}
       onChange={e => {
         const mode = e.target.value;
@@ -47,21 +52,33 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
       {catalog.connections.map(connection => <option key={connection.id} value={connection.id}>{connection.name} (required)</option>)}
     </select></label>
     {value.connection.mode === "workspace" && <label>Required HTTP proxy endpoint<input required
+      onInvalid={event => {
+        const field = event.currentTarget;
+        const section = field.closest("details");
+        if (section && !section.open) {
+          section.open = true;
+          field.focus();
+        }
+      }}
       value={value.connection.endpoint} onChange={e => set({ connection: { mode: "workspace", endpoint: e.target.value } })}
       placeholder="http://127.0.0.1:4312" /></label>}
+    </details>
+    <details className="profile-section"><summary>Advanced settings</summary>
     <Checklist title="Tags" items={catalog.tags} value={value.tagIds} change={tags => set({ tagIds: tags, pinnedTagId: tags.includes(value.pinnedTagId ?? "") ? value.pinnedTagId : null })} />
     <label>Pinned tag<select value={value.pinnedTagId ?? ""} onChange={e => set({ pinnedTagId: e.target.value || null })}>
       <option value="">None</option>{catalog.tags.filter(t => value.tagIds.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
     </select></label>
     <Checklist title="Reusable bookmarks" items={catalog.bookmarks} value={value.bookmarkIds} change={bookmarkIds => set({ bookmarkIds })} />
     <Checklist title="Extension assignments (approve installation separately)" items={catalog.extensions} value={value.extensionIds} change={extensionIds => set({ extensionIds })} />
+    </details>
   </>;
 }
 
-export function WorkspaceForm({ catalog, mode, workspace, run, busy, cancel }: {
-  catalog: Catalog; mode: "manual" | "quick" | "template" | "clone" | "edit"; workspace?: Workspace;
-  run: Run; busy: boolean; cancel: () => void;
+export function WorkspaceForm({ catalog, mode: initialMode, workspace, run, busy, cancel, bulk, browser }: {
+  catalog: Catalog; mode: "manual" | "quick" | "template" | "clone" | "edit"; workspace?: Workspace; browser?: string;
+  run: Run; busy: boolean; cancel: () => void; bulk: () => void;
 }) {
+  const [mode, setMode] = useState(initialMode);
   const [name, setName] = useState(mode === "clone" ? `${workspace?.name} copy`.slice(0, 100) : workspace?.name ?? "");
   const [settings, setSettings] = useState(workspace?.settings ?? emptySettings);
   const [template, setTemplate] = useState(catalog.defaultTemplate ?? catalog.templates[0]?.id ?? "");
@@ -74,7 +91,13 @@ export function WorkspaceForm({ catalog, mode, workspace, run, busy, cancel }: {
       run("create_workspace", { name, creation }, `Created ${name}.`, true);
     }
   }}>
-    <h2>{({ manual: "New workspace", quick: "Quick workspace", template: "Create from template", clone: "Clone settings", edit: "Edit workspace" })[mode]}</h2>
+    <h2>{({ manual: "New profile", quick: "New profile", template: "Create from template", clone: "Clone settings", edit: "Edit workspace" })[mode]}</h2>
+    {(mode === "manual" || mode === "quick") && <nav className="create-tabs" aria-label="Create profile">
+      <button type="button" aria-pressed={mode === "quick"} onClick={() => setMode("quick")}>Quick create</button>
+      <button type="button" aria-pressed={mode === "manual"} onClick={() => setMode("manual")}>Advanced create</button>
+      <button type="button" onClick={bulk}>Bulk import</button>
+    </nav>}
+    <div className="profile-layout"><div className="profile-fields">
     <label>Name<input required maxLength={100} value={name} autoFocus onChange={e => setName(e.target.value)} /></label>
     {mode === "manual" || mode === "edit" ? <SettingsFields catalog={catalog} value={settings} change={setSettings} /> : null}
     {mode === "template" && <label>Template<select required value={template} onChange={e => setTemplate(e.target.value)}>
@@ -82,6 +105,16 @@ export function WorkspaceForm({ catalog, mode, workspace, run, busy, cancel }: {
     </select></label>}
     {mode === "quick" && <p>{catalog.defaultTemplate ? `Using default template: ${catalog.templates.find(t => t.id === catalog.defaultTemplate)?.name}.` : "Using a clean browser and blank settings."}</p>}
     {mode === "clone" && <p>Copies only manager settings. Cookies, passwords and other browser data are not copied.</p>}
+    </div><aside className="profile-overview">
+      <h3>Browser profile overview</h3>
+      <dl>
+        <dt>Profile</dt><dd>{name || "Untitled profile"}</dd>
+        <dt>Browser</dt><dd>{browser || "Not configured"}</dd>
+        <dt>Session</dt><dd>Isolated local browser profile</dd>
+        <dt>Connection</dt><dd>{mode === "manual" || mode === "edit" ? ({ system: "System default", direct: "Direct", workspace: "Workspace-only HTTP proxy", saved: "Saved HTTP proxy" })[settings.connection.mode] : "From selected creation settings"}</dd>
+        <dt>Fingerprint</dt><dd>Native browser values</dd>
+      </dl>
+    </aside></div>
     <div className="actions"><button type="button" onClick={cancel}>Cancel</button><button className="primary" disabled={busy}>{mode === "edit" ? "Save workspace" : "Create workspace"}</button></div>
   </form>;
 }

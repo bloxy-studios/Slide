@@ -110,6 +110,7 @@ pub struct Snapshot {
 struct ChildProcess {
     process: Child,
     initial: bool,
+    startup_check: Option<crate::runtime::Route>,
 }
 
 struct Transition {
@@ -845,6 +846,21 @@ impl Manager {
         };
         workspace.status = status;
         workspace.identity = identity;
+        if let (Status::Running, Observation::Session(session)) = (status, observation) {
+            let startup_check = self.children.get_mut(&workspace.id)
+                .and_then(|children| children.iter_mut().find(|child| child.process.id() == session.identity.pid))
+                .and_then(|child| child.startup_check.take());
+            if let Some(route) = startup_check {
+                if self.chromium.verified(&directory, session.identity).is_ok() {
+                    match Chromium::launch(&session.executable, &directory, &[crate::startup::check_url()], false, &[], &route, false) {
+                        Ok(process) => self.children.get_mut(&workspace.id).unwrap().push(ChildProcess {
+                            process, initial: false, startup_check: None,
+                        }),
+                        Err(error) => workspace.detail = Some(error),
+                    }
+                }
+            }
+        }
         let close_unavailable = status.close_unavailable_reason();
         workspace.can_close = close_unavailable.is_none();
         if status == Status::Background {
@@ -1081,8 +1097,9 @@ impl Manager {
                         }
                     }
                 }
+                let (urls, defer_check) = crate::startup::launch_tabs(urls, !automation && !active && url.is_none());
                 let seeded = should_seed && seed_profile(&directory, &workspace.name)?;
-                let child = Chromium::launch(&runtime.path, &directory, urls, reopen, &extensions, route, debugging).map_err(|error| {
+                let child = Chromium::launch(&runtime.path, &directory, &urls, reopen, &extensions, &route, debugging).map_err(|error| {
                     if seeded {
                         remove_profile_seed(&directory.join("Default"));
                     }
@@ -1097,6 +1114,7 @@ impl Manager {
                     .push(ChildProcess {
                         process: child,
                         initial: !active,
+                        startup_check: defer_check.then_some(route),
                     });
                 if workspace.status != Status::Running {
                     self.transitions.insert(
@@ -1911,6 +1929,7 @@ mod tests {
                 vec![ChildProcess {
                     process,
                     initial: true,
+                    startup_check: None,
                 }],
             );
             assert_eq!(

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src https://api.db-ip.com; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Slide · Startup check</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f2f5fa; color: #19263e; font: 15px/1.55 system-ui, sans-serif; }
+  header { background: #173d9a; color: white; padding: 24px 24px 100px; }
+  .measure { max-width: 740px; margin: 0 auto; }
+  .brand { font-weight: 750; }
+  header p { color: #e1ebff; margin: 8px 0; }
+  .banner { text-align: center; margin: 34px 0 6px; }
+  h1 { font-size: clamp(1.5rem,4vw,2.2rem); margin: 0; }
+  button { cursor: pointer; font: inherit; color: white; background: #ffffff20; border: 1px solid #ffffff70; border-radius: 6px; padding: 5px 14px; margin-top: 10px; }
+  button:disabled { opacity: .6; cursor: default; }
+  main { position: relative; margin-top: -72px; padding: 0 20px 30px; }
+  article { background: white; border: 1px solid #e2e9f5; box-shadow: 0 3px 8px #15244f0b; border-radius: 10px; margin-bottom: 14px; padding: 22px 26px; }
+  h2 { font-size: 1.1rem; margin: 0 0 14px; }
+  dl { display: grid; grid-template-columns: minmax(110px, .5fr) 1fr; gap: 8px 16px; margin: 0; }
+  dt, article p { color: #566680; }
+  dd { margin: 0; overflow-wrap: anywhere; }
+</style>
+<header><div class="measure">
+  <div class="brand">Slide · Startup check</div>
+  <div class="banner"><h1 id="status" role="status">Checking connection…</h1>
+    <p id="detail">Looking up this browser’s exit IP with DB-IP.</p>
+    <button type="button" id="retry" disabled>Retry check</button>
+  </div>
+</div></header>
+<main><div class="measure">
+  <article><h2>Basic information</h2><dl>
+    <dt>IP query channel</dt><dd>DB-IP</dd>
+    <dt>Exit IP</dt><dd id="ip">—</dd>
+    <dt>Approximate location</dt><dd id="geo">—</dd>
+    <dt>Last checked</dt><dd id="time">—</dd>
+  </dl><p>This checks one HTTPS request from this browser. It does not verify every network route.</p></article>
+  <article><h2>Fingerprint info</h2><p>These are the browser’s reported values. Slide does not spoof them.</p><dl>
+    <dt>User agent</dt><dd id="agent">—</dd>
+    <dt>Platform</dt><dd id="platform">—</dd>
+    <dt>Language</dt><dd id="language">—</dd>
+    <dt>Time zone</dt><dd id="zone">—</dd>
+    <dt>Screen</dt><dd id="screen">—</dd>
+  </dl></article>
+</div></main>
+<script>
+  const write = (id, value) => { document.getElementById(id).textContent = value || "—"; };
+  const retry = document.getElementById("retry");
+  write("agent", navigator.userAgent);
+  write("platform", navigator.userAgentData?.platform || navigator.platform);
+  write("language", navigator.language);
+  write("zone", Intl.DateTimeFormat().resolvedOptions().timeZone);
+  write("screen", screen.width + " × " + screen.height);
+  async function check() {
+    retry.disabled = true;
+    write("status", "Checking connection…");
+    write("detail", "Looking up this browser’s exit IP with DB-IP.");
+    write("ip", ""); write("geo", ""); write("time", "");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch("https://api.db-ip.com/v2/free/self", {
+        signal: controller.signal, credentials: "omit", cache: "no-store", redirect: "error"
+      });
+      if (!response.ok) throw new Error();
+      const info = await response.json();
+      if (typeof info.ipAddress !== "string" || !info.ipAddress) throw new Error();
+      write("ip", info.ipAddress);
+      write("geo", [info.city, info.stateProv, info.countryName].filter(value => typeof value === "string" && value).join(", "));
+      write("status", "Connection success");
+      write("detail", "DB-IP reported the exit IP for this browser request.");
+    } catch {
+      write("status", "Connection failure");
+      write("detail", "The browser could not verify its exit IP. Check your connection or proxy, then retry.");
+    } finally {
+      clearTimeout(timeout);
+      write("time", new Date().toLocaleString());
+      retry.disabled = false;
+    }
+  }
+  retry.addEventListener("click", check);
+  void check();
+</script>
