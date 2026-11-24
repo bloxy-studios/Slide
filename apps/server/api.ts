@@ -13,7 +13,7 @@ type Workspace = {
   holderId: string | null; holderDevice: string | null; active: boolean; role: WorkspaceRole;
 };
 const origins = new Set(["tauri://localhost", "http://tauri.localhost", "http://127.0.0.1:1420", "http://localhost:1420"]);
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const exchangeEmailDigest = (address: string) => hash("exchange.email:" + address);
@@ -25,7 +25,7 @@ class Problem extends Error {
 function fail(status: number, message: string): never { throw new Problem(status, message); }
 function uuid(value: unknown): string {
   if (typeof value !== "string" || !uuidPattern.test(value)) fail(400, "Invalid identifier.");
-  return value;
+  return value.toLowerCase();
 }
 function text(value: unknown, limit: number, min = 1): string {
   if (typeof value !== "string" || value.length < min || value.length > limit || /[\u0000-\u001f\u007f]/.test(value)) {
@@ -158,7 +158,7 @@ export function createApi(db: SQL, blobs: BlobStore, leaseSeconds = 90, apiRateL
     if (actor.apiTeam) {
       const scope = requiredScope(method, resource, id, action, sub);
       if (!scope || !actor.scopes?.includes(scope)) fail(403, "API token scope does not allow this operation.");
-      if (resource === "teams" && id && id !== actor.apiTeam) fail(404, "Team unavailable.");
+      if (resource === "teams" && id && uuid(id) !== actor.apiTeam) fail(404, "Team unavailable.");
     }
     if (resource === "sessions" && id === "current" && !action && method === "DELETE") {
       await db`DELETE FROM sessions WHERE digest=${hash(token)}`;

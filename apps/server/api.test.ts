@@ -62,14 +62,18 @@ test.skipIf(!url)("API tokens are hashed, scoped to one team, revocable, and lim
   expect((await call(`/teams/${team.id}/audit`, "GET", member.token)).status).toBe(403);
   const writer = await ok(tokens, "POST", alice.token, { name: "Writer", scopes: ["workspaces:write"] });
   const key = randomUUID();
-  const create = (name: string) => api!(new Request("http://localhost/v1/workspaces", { method: "POST",
-    headers: { Authorization: "Bearer " + writer.token, "Content-Type": "application/json", "Idempotency-Key": key },
+  const create = (name: string, requestKey = key) => api!(new Request("http://localhost/v1/workspaces", { method: "POST",
+    headers: { Authorization: "Bearer " + writer.token, "Content-Type": "application/json", "Idempotency-Key": requestKey },
     body: JSON.stringify({ name, teamId: team.id }),
   }));
   const creations = await Promise.all([create("Idempotent"), create("Idempotent")]);
   expect(creations.map(response => response.status)).toEqual([200, 200]);
   const [first, second] = await Promise.all(creations.map(response => response.json()));
   expect(first).toEqual(second);
+  const uppercase = await create("Idempotent", key.toUpperCase());
+  expect(uppercase.status).toBe(200);
+  expect(await uppercase.json()).toEqual(first);
+  expect((await create("Different", key.toUpperCase())).status).toBe(409);
   expect((await create("Different")).status).toBe(409);
   expect(await ok(`/teams/${team.id}/audit`, "GET", alice.token)).toContainEqual(expect.objectContaining({
     apiTokenId: writer.id, subjectId: first.id, action: "workspace.create",
