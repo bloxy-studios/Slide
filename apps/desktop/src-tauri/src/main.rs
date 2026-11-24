@@ -8,7 +8,7 @@ mod runtime;
 
 use catalog::{Bookmark, ItemKind, Label, Settings, Tag, TaskDraft, Template, View};
 use manager::{insert_workspace, Manager, Snapshot, TrashAction};
-use runtime::RuntimeInfo;
+use runtime::{Chromium, RuntimeInfo};
 use std::{path::PathBuf, sync::Mutex};
 use tauri::{Manager as _, State};
 
@@ -411,6 +411,11 @@ fn choose_runtime(state: State<'_, AppState>, path: String) -> Result<RuntimeInf
 }
 
 #[tauri::command]
+fn use_bundled_runtime(state: State<'_, AppState>) -> Result<RuntimeInfo, String> {
+    with_manager(state, Manager::use_bundled_runtime)
+}
+
+#[tauri::command]
 fn workspace_action(
     state: State<'_, AppState>,
     account: String,
@@ -428,7 +433,9 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let root = app.path().app_local_data_dir()?;
-            match Manager::new(root) {
+            let bundled = Chromium::bundled_path(&app.path().resource_dir()?);
+            let bundled = (!cfg!(debug_assertions) || bundled.exists()).then_some(bundled);
+            match Manager::with_bundle(root, bundled) {
                 Ok(manager) => {
                     app.manage(Mutex::new(manager));
                 }
@@ -460,6 +467,7 @@ fn main() {
             open_bookmark,
             open_extension_page,
             choose_runtime,
+            use_bundled_runtime,
             workspace_action
         ])
         .run(tauri::generate_context!())

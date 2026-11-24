@@ -60,6 +60,7 @@ pub fn inspect(selected: &Path) -> Result<RuntimeInfo, String> {
         brand: brand.into(),
         version,
         architecture,
+        bundled: false,
     })
 }
 

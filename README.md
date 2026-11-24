@@ -2,11 +2,11 @@
 
 A desktop manager for persistent, isolated browser workspaces.
 
-Slide Workspaces is local-only through Milestone B. **Open** starts the installed Google Chrome or Chromium shown in the manager, using a normal browser window and a private directory for that workspace. Workspace management, import, templates, reminders and trash work offline. External sites and the Chrome Web Store still need network access.
+Slide Workspaces is local-only through Milestone B. Development installers include Chromium as the default runtime; you can also choose an installed Chrome or Chromium. **Open** uses a normal browser window and a private data directory for that workspace. Workspace management, import, templates, reminders and trash work offline. External sites and the Chrome Web Store still need network access.
 
 ## Run
 
-Install stable Rust, Bun and platform build tools (Xcode Command Line Tools on macOS, or MSVC/Windows SDK and WebView2 on Windows). Install Chrome or Chromium separately.
+Install stable Rust, Bun and platform build tools (Xcode Command Line Tools on macOS, or MSVC/Windows SDK and WebView2 on Windows). Running from source uses an installed Chrome or Chromium; the packaged app does not require one.
 
 ```sh
 bun install --frozen-lockfile
@@ -19,10 +19,10 @@ For the installed-app demo, start just the synthetic fixture with `bun run fixtu
 
 ```sh
 # On macOS (native architecture)
-bun run --cwd apps/desktop tauri build --bundles app,dmg
+bun run --cwd apps/desktop bundle --bundles app,dmg
 
 # On Windows x64
-bun run --cwd apps/desktop tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+bun run --cwd apps/desktop bundle --target x86_64-pc-windows-msvc --bundles nsis,msi
 ```
 
 Artifacts are in `apps/desktop/src-tauri/target/` and [desktop installer CI](https://github.com/bloxy-studios/Slide/actions/workflows/desktop.yml). Development installers are unsigned for distribution: macOS uses an ad hoc application signature; no notarization or Windows Authenticode is provided. Use approved installation procedures; do not disable OS protections.
@@ -39,5 +39,6 @@ cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 - [Milestone A acceptance and Mac artifact details](docs/milestone-a.md)
 - [Milestone B local workflows and import format](docs/milestone-b.md)
+- [Bundled Chromium provenance, configuration and update limits](docs/runtime.md)
 - [Feature matrix and gaps](docs/feature-matrix.md)
 - [Runner inventory](docs/runners.md)

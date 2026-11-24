@@ -21,6 +21,7 @@ pub struct RuntimeInfo {
     pub brand: String,
     pub version: String,
     pub architecture: String,
+    pub bundled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,24 @@ impl Chromium {
         native::candidates().into_iter().find_map(|path| Self::inspect(&path).ok()).ok_or_else(|| {
             "No compatible Google Chrome or Chromium installation was found. Install one and choose its application or executable below.".into()
         })
+    }
+
+    pub fn bundled_path(resources: &Path) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        let path = resources.join("../Frameworks/Chromium.app");
+        #[cfg(target_os = "windows")]
+        let path = resources.join("chromium/chrome.exe");
+        path
+    }
+
+    pub fn inspect_bundled(path: &Path) -> Result<RuntimeInfo, String> {
+        let mut runtime = native::inspect(path)
+            .map_err(|error| format!("Bundled Chromium is unavailable: {error} Reinstall Slide or choose another browser."))?;
+        if runtime.brand != "Chromium" {
+            return Err("The bundled browser does not identify as Chromium. Reinstall Slide.".into());
+        }
+        runtime.bundled = true;
+        Ok(runtime)
     }
 
     pub fn inspect(path: &Path) -> Result<RuntimeInfo, String> {

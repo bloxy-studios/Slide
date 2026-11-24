@@ -69,6 +69,7 @@ pub struct Snapshot {
     workspaces: Vec<Workspace>,
     runtime: Option<RuntimeInfo>,
     runtime_error: Option<String>,
+    has_bundled_runtime: bool,
     catalog: CatalogView,
 }
 
@@ -92,13 +93,19 @@ pub struct Manager {
     catalog: Result<Catalog, String>,
     chromium: Chromium,
     runtime: Result<RuntimeInfo, String>,
+    bundled_path: Option<PathBuf>,
     children: HashMap<String, Vec<ChildProcess>>,
     transitions: HashMap<String, Transition>,
     pub import_preview: Option<(String, crate::importer::Preview)>,
 }
 
 impl Manager {
+    #[cfg(test)]
     pub fn new(root: PathBuf) -> Result<Self, String> {
+        Self::with_bundle(root, None)
+    }
+
+    pub fn with_bundle(root: PathBuf, bundled_path: Option<PathBuf>) -> Result<Self, String> {
         fs::create_dir_all(&root)
             .map_err(|e| format!("Could not create the app data folder: {e}"))?;
         let lock = OpenOptions::new()
@@ -140,9 +147,11 @@ impl Manager {
             )
             .optional()
             .map_err(db_error)?;
-        let runtime = path.map_or_else(Chromium::discover, |path| {
-            Chromium::inspect(Path::new(&path))
-        });
+        let runtime = match (path, bundled_path.as_deref()) {
+            (Some(path), _) => Chromium::inspect(Path::new(&path)),
+            (None, Some(path)) => Chromium::inspect_bundled(path),
+            (None, None) => Chromium::discover(),
+        };
         Ok(Self {
             catalog: Ok(Catalog {
                 root,
@@ -151,6 +160,7 @@ impl Manager {
             }),
             chromium: Chromium::new(),
             runtime,
+            bundled_path,
             children: HashMap::new(),
             transitions: HashMap::new(),
             import_preview: None,
@@ -162,6 +172,7 @@ impl Manager {
             catalog: Err(error),
             chromium: Chromium::new(),
             runtime: Err("Catalog unavailable".into()),
+            bundled_path: None,
             children: HashMap::new(),
             transitions: HashMap::new(),
             import_preview: None,
@@ -247,6 +258,14 @@ impl Manager {
         Ok(runtime)
     }
 
+    pub fn use_bundled_runtime(&mut self) -> Result<RuntimeInfo, String> {
+        let path = self.bundled_path.as_deref().ok_or("This build does not include Chromium.")?;
+        let runtime = Chromium::inspect_bundled(path)?;
+        self.db()?.execute("DELETE FROM runtime_settings", []).map_err(db_error)?;
+        self.runtime = Ok(runtime.clone());
+        Ok(runtime)
+    }
+
     #[cfg(test)]
     fn create(&mut self, name: &str, start_url: &str) -> Result<(), String> {
         let db = self.db()?;
@@ -273,6 +292,7 @@ impl Manager {
             workspaces,
             runtime: self.runtime.as_ref().ok().cloned(),
             runtime_error: self.runtime.as_ref().err().cloned(),
+            has_bundled_runtime: self.bundled_path.is_some(),
             catalog: catalog::snapshot(self.db()?, account)?,
         })
     }
@@ -648,7 +668,14 @@ impl Manager {
                     session.executable
                 } else {
                     let cached = self.runtime.as_ref().map_err(Clone::clone)?;
-                    let runtime = Chromium::inspect(&cached.path)?;
+                    let runtime = if cached.bundled {
+                        Chromium::inspect_bundled(&cached.path)?
+                    } else {
+                        Chromium::inspect(&cached.path)?
+                    };
+                    if runtime.bundled {
+                        seed_profile(&directory, &workspace.name)?;
+                    }
                     let executable = runtime.path.clone();
                     self.runtime = Ok(runtime);
                     executable
@@ -736,6 +763,28 @@ fn prepare_directory(root: &Path, directory: &Path) -> Result<PathBuf, String> {
     checked_directory(root, directory)
 }
 
+fn seed_profile(directory: &Path, name: &str) -> Result<(), String> {
+    let first_run = (|| -> std::io::Result<()> {
+        if fs::read_dir(directory)?.next().transpose()?.is_some() {
+            return Ok(());
+        }
+        let profile = directory.join("Default");
+        fs::create_dir(&profile)?;
+        let result = (|| -> std::io::Result<()> {
+            let settings = serde_json::json!({ "profile": { "name": name } });
+            let file = OpenOptions::new().write(true).create_new(true).open(profile.join("Preferences"))?;
+            serde_json::to_writer(file, &settings)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(profile.join("Preferences"));
+            let _ = fs::remove_dir(&profile);
+        }
+        result
+    })();
+    first_run.map_err(|error| format!("Could not initialize the Chromium profile: {error}"))
+}
+
 fn checked_directory(root: &Path, directory: &Path) -> Result<PathBuf, String> {
     let canonical = dunce::canonicalize(directory)
         .map_err(|e| format!("Could not resolve the workspace directory: {e}"))?;
@@ -772,6 +821,18 @@ pub(crate) fn validate_url(input: &str) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bundled_profile_seeding_never_changes_existing_preferences() {
+        let test = tempfile::tempdir().unwrap();
+        let directory = test.path();
+        seed_profile(directory, "Creator").unwrap();
+        let preferences = directory.join("Default/Preferences");
+        assert_eq!(fs::read_to_string(&preferences).unwrap(), r#"{"profile":{"name":"Creator"}}"#);
+        fs::write(&preferences, "{}").unwrap();
+        seed_profile(directory, "Viewer").unwrap();
+        assert_eq!(fs::read_to_string(preferences).unwrap(), "{}");
+    }
+
     use super::*;
 
     #[test]
