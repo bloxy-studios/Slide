@@ -239,7 +239,29 @@ fn worksheet_rows(
         .collect())
 }
 
-fn text_rows(bytes: &[u8], delimiter: u8) -> Result<Vec<(usize, Vec<String>)>, String> {
+struct InputRow {
+    number: usize,
+    values: Vec<String>,
+    error: Option<&'static str>,
+}
+
+fn has_unclosed_quote(record: &[u8], delimiter: u8) -> bool {
+    let mut bytes = record.iter().copied().peekable();
+    let (mut quoted, mut field_start) = (false, true);
+    while let Some(byte) = bytes.next() {
+        if quoted {
+            if byte == b'"' && bytes.next_if_eq(&b'"').is_none() {
+                quoted = false;
+            }
+        } else {
+            quoted = field_start && byte == b'"';
+            field_start = byte == delimiter || matches!(byte, b'\r' | b'\n');
+        }
+    }
+    quoted
+}
+
+fn text_rows(bytes: &[u8], delimiter: u8) -> Result<Vec<InputRow>, String> {
     let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -249,11 +271,14 @@ fn text_rows(bytes: &[u8], delimiter: u8) -> Result<Vec<(usize, Vec<String>)>, S
     let mut rows = Vec::new();
     let mut scanned = 0;
     let mut bare_crs = 0;
-    for row in reader.records() {
+    let mut row = csv::StringRecord::new();
+    while reader
+        .read_record(&mut row)
+        .map_err(|e| format!("Invalid UTF-8 or delimited data: {e}"))?
+    {
         if rows.len() > ROW_LIMIT {
             return Err("Use at most 1,000 data rows per file.".into());
         }
-        let row = row.map_err(|e| format!("Invalid UTF-8 or delimited data: {e}"))?;
         if row.len() > COLUMN_LIMIT {
             return Err("Use at most 32 columns.".into());
         }
@@ -265,7 +290,14 @@ fn text_rows(bytes: &[u8], delimiter: u8) -> Result<Vec<(usize, Vec<String>)>, S
             scanned = offset;
             p.line() as usize + bare_crs
         });
-        rows.push((number, row.iter().map(str::to_owned).collect()));
+        let error = (reader.position().byte() as usize == bytes.len()
+            && has_unclosed_quote(&bytes[scanned..], delimiter))
+            .then_some("A quoted field is not closed.");
+        rows.push(InputRow {
+            number,
+            values: row.iter().map(str::to_owned).collect(),
+            error,
+        });
     }
     Ok(rows)
 }
@@ -279,13 +311,23 @@ fn preview(db: &Connection, account: &str, bytes: &[u8], format: &str) -> Result
     let mut rows = match format {
         "csv" => text_rows(bytes, b',')?,
         "tsv" | "txt" => text_rows(bytes, b'\t')?,
-        "xlsx" => xlsx(bytes)?,
+        "xlsx" => xlsx(bytes)?
+            .into_iter()
+            .map(|(number, values)| InputRow {
+                number,
+                values,
+                error: None,
+            })
+            .collect(),
         _ => return Err("Choose a CSV, TSV, TXT or XLSX file.".into()),
     }
     .into_iter();
-    let headers = rows.next().ok_or("This file is empty.")?.1;
+    let header = rows.next().ok_or("This file is empty.")?;
+    if let Some(error) = header.error {
+        return Err(format!("Invalid header: {error}"));
+    }
     let mut fields = [None; HEADERS.len()];
-    for (index, header) in headers.iter().enumerate() {
+    for (index, header) in header.values.iter().enumerate() {
         if let Some(pos) = HEADERS
             .iter()
             .position(|name| header.trim().eq_ignore_ascii_case(name))
@@ -318,8 +360,8 @@ fn preview(db: &Connection, account: &str, bytes: &[u8], format: &str) -> Result
         .collect::<rusqlite::Result<_>>()
         .map_err(db_error)?;
     let mut preview = Vec::new();
-    for (number, values) in rows {
-        if values.iter().all(|v| v.trim().is_empty()) {
+    for InputRow { number, values, error } in rows {
+        if error.is_none() && values.iter().all(|v| v.trim().is_empty()) {
             continue;
         }
         let value = |field: usize| {
@@ -340,9 +382,11 @@ fn preview(db: &Connection, account: &str, bytes: &[u8], format: &str) -> Result
                 .filter(|url| !url.trim().is_empty())
                 .map(str::to_owned),
         );
-        let error = catalog::name(&name)
-            .and_then(|_| catalog::settings(db, account, settings.clone()).map(|_| ()))
-            .err();
+        let error = error.map(str::to_owned).or_else(|| {
+            catalog::name(&name)
+                .and_then(|_| catalog::settings(db, account, settings.clone()).map(|_| ()))
+                .err()
+        });
         let is_completed = completed.contains(&number);
         let duplicate = error.is_none() && !is_completed && !names.insert(name.to_lowercase());
         preview.push(PreviewRow {
@@ -454,6 +498,19 @@ mod tests {
         }
         let retry = preview(manager.db().unwrap(), "local", input, "csv").unwrap();
         assert!(retry.rows.iter().all(|row| row.completed));
+    }
+
+    #[test]
+    fn unterminated_quote_marks_the_record_invalid() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Manager::new(root.path().into()).unwrap();
+        let input = b"name,notes\nFirst,\"line one\nline \"\"two\"\"\"\nBad,\"never closed\nAnother,row";
+        let doc = preview(manager.db().unwrap(), "local", input, "csv").unwrap();
+        assert_eq!(doc.rows.len(), 2);
+        assert_eq!(doc.rows[0].settings.notes, "line one\nline \"two\"");
+        assert!(doc.rows[0].error.is_none());
+        assert_eq!(doc.rows[1].name, "Bad");
+        assert_eq!(doc.rows[1].error.as_deref(), Some("A quoted field is not closed."));
     }
 
     #[test]
