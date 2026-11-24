@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod catalog;
+mod connections;
 mod extensions;
 mod crx;
 mod importer;
@@ -282,40 +283,44 @@ async fn network_test(
     account: String,
     id: String,
 ) -> Result<String, String> {
+    let proxy = with_manager(state, |manager| {
+        manager.require_account(&account)?;
+        manager.workspace_proxy(&account, &id)
+    })?;
+    tauri::async_runtime::spawn_blocking(move || connections::test_route(proxy, None))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn save_connection(state: State<'_, AppState>, account: String, name: String, endpoint: String) -> Result<String, String> {
     with_manager(state, |manager| {
         manager.require_account(&account)?;
-        if !catalog::has_workspace(manager.db()?, &account, &id, false)? {
-            return Err("Workspace no longer exists.".into());
-        }
-        Ok(())
-    })?;
-    tauri::async_runtime::spawn_blocking(|| {
-        use std::{
-            io::{Read, Write},
-            net::TcpStream,
-            time::Duration,
-        };
-        let timeout = Duration::from_secs(2);
-        let mut socket = TcpStream::connect_timeout(&([127, 0, 0, 1], 4310).into(), timeout)
-            .map_err(|_| "The local fixture is not reachable at 127.0.0.1:4310.")?;
-        socket
-            .set_read_timeout(Some(timeout))
-            .and_then(|_| socket.set_write_timeout(Some(timeout)))
-            .map_err(|_| "Could not set fixture probe timeouts.")?;
-        socket
-            .write_all(b"HEAD / HTTP/1.1\r\nHost: 127.0.0.1:4310\r\nConnection: close\r\n\r\n")
-            .map_err(|_| "Could not request the local fixture.")?;
-        let mut prefix = [0; 12];
-        socket
-            .read_exact(&mut prefix)
-            .map_err(|_| "The local fixture did not respond.")?;
-        if !prefix.starts_with(b"HTTP/1.") {
-            return Err("The local endpoint did not send an HTTP response.".into());
-        }
-        Ok("Local HTTP fixture reachable (manager only; no browser or proxy test)".into())
+        connections::save(manager.db()?, &account, &name, &endpoint)
     })
-    .await
-    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn import_connections(state: State<'_, AppState>, account: String, csv: String) -> Result<usize, String> {
+    with_manager(state, |manager| {
+        manager.require_account(&account)?;
+        connections::import_csv(manager.db_mut()?, &account, &csv)
+    })
+}
+
+#[tauri::command]
+async fn test_connection(
+    state: State<'_, AppState>,
+    account: String,
+    id: Option<String>,
+    credentials: Option<connections::Credentials>,
+) -> Result<String, String> {
+    let proxy = with_manager(state, |manager| {
+        manager.require_account(&account)?;
+        let selection = id.map_or(connections::Selection::Direct, |id| connections::Selection::Saved { id });
+        connections::resolve(manager.db()?, &account, &selection)
+    })?;
+    tauri::async_runtime::spawn_blocking(move || connections::test_route(proxy, credentials))
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -477,6 +482,9 @@ fn main() {
             import_profile_row,
             batch_assign,
             network_test,
+            save_connection,
+            import_connections,
+            test_connection,
             stage_extension,
             save_store_extension,
             open_bookmark,

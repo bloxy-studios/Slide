@@ -101,6 +101,8 @@ pub struct Snapshot {
     runtime: Option<RuntimeInfo>,
     runtime_error: Option<String>,
     has_bundled_runtime: bool,
+    platform: &'static str,
+    required_http_proxy_available: bool,
     catalog: CatalogView,
 }
 
@@ -160,6 +162,7 @@ impl Manager {
             include_str!("../migrations/003_profile_browser.sql"),
             include_str!("../migrations/004_profile_browser_version.sql"),
             include_str!("../migrations/005_workspace_crx.sql"),
+            include_str!("../migrations/006_connections.sql"),
         ];
         if version as usize > migrations.len() {
             return Err(
@@ -280,7 +283,7 @@ impl Manager {
     }
 
     pub fn assign(
-        &self,
+        &mut self,
         account: &str,
         id: &str,
         kind: ItemKind,
@@ -454,6 +457,8 @@ impl Manager {
             runtime: self.runtime.as_ref().ok().cloned(),
             runtime_error: self.runtime.as_ref().err().cloned(),
             has_bundled_runtime: self.bundled_path.is_some(),
+            platform: std::env::consts::OS,
+            required_http_proxy_available: self.runtime.as_ref().is_ok_and(RuntimeInfo::supports_required_http_proxy),
             catalog: catalog::snapshot(self.db()?, account)?,
         })
     }
@@ -565,20 +570,37 @@ impl Manager {
     }
 
     pub fn edit_workspace(
-        &self,
+        &mut self,
         account: &str,
         id: &str,
         name: &str,
         settings: Settings,
     ) -> Result<(), String> {
+        let settings = catalog::settings(self.db()?, account, settings)?;
+        let mut current = self.rows(account, Some(id))?.pop()
+            .filter(|workspace| workspace.trashed_at.is_none())
+            .ok_or("Workspace no longer exists.")?;
+        if current.settings.connection != settings.connection {
+            self.chromium.refresh();
+            self.reconcile(&mut current)?;
+            if !matches!(current.status, Status::Closed | Status::Crashed) {
+                return Err("Close this workspace before changing its connection.".into());
+            }
+        }
         let db = self.db()?;
-        let settings = catalog::settings(db, account, settings)?;
         if db.execute("UPDATE workspaces SET name=?3,start_url=?4,settings=?5 WHERE account_id=?1 AND id=?2 AND trashed_at IS NULL",
             params![account, id, catalog::name(name)?, settings.launch_urls.first(), catalog::encode(&settings)?],
         ).map_err(db_error)? != 1 {
             return Err("Workspace no longer exists.".into());
         }
         Ok(())
+    }
+
+    pub fn workspace_proxy(&self, account: &str, id: &str) -> Result<Option<crate::connections::Proxy>, String> {
+        let workspace = self.rows(account, Some(id))?.pop()
+            .filter(|workspace| workspace.trashed_at.is_none())
+            .ok_or("Workspace no longer exists.")?;
+        crate::connections::resolve(self.db()?, account, &workspace.settings.connection)
     }
 
     pub fn trash_workspace(
@@ -905,21 +927,32 @@ impl Manager {
                 let directory = prepare_directory(&root, &directory)?;
                 let reopen = workspace.status == Status::Background;
                 let active = reopen || workspace.status == Status::Running;
-                let (executable, should_seed) = if active {
+                let (runtime, should_seed) = if active {
                     let Observation::Session(session) = self.chromium.observe(&directory) else {
                         return Err("The browser changed. Retry opening the workspace.".into());
                     };
                     self.chromium.verified(&directory, session.identity)?;
+                    let runtime = self.identify_bundled(Chromium::inspect(&session.executable)?);
                     if let Some(browser) = &workspace.browser {
-                        let runtime = Chromium::inspect(&session.executable)?;
                         if !browser.accepts(&runtime) {
                             return Err(browser.unavailable());
                         }
                     }
-                    (session.executable, false)
+                    (runtime, false)
                 } else {
                     let runtime = self.profile_runtime(&workspace, &directory)?;
-                    (runtime.path, runtime.bundled)
+                    let should_seed = runtime.bundled;
+                    (runtime, should_seed)
+                };
+                let route = match self.workspace_proxy(&account, id)? {
+                    Some(proxy) => {
+                        if !runtime.supports_required_http_proxy() {
+                            return Err("Required HTTP proxy launch is only enabled for bundled Chromium on macOS arm64. No direct fallback was attempted.".into());
+                        }
+                        proxy.require_reachable()?;
+                        crate::runtime::Route::Proxy(proxy)
+                    }
+                    None => crate::runtime::Route::Direct,
                 };
                 self.catalog()?
                     .db
@@ -931,7 +964,7 @@ impl Manager {
                 );
                 let extensions = if should_seed { self.approved_extensions(&account, &workspace)? } else { Vec::new() };
                 let seeded = should_seed && seed_profile(&directory, &workspace.name)?;
-                let child = Chromium::launch(&executable, &directory, urls, reopen, &extensions).map_err(|error| {
+                let child = Chromium::launch(&runtime.path, &directory, urls, reopen, &extensions, route).map_err(|error| {
                     if seeded {
                         remove_profile_seed(&directory.join("Default"));
                     }
@@ -1311,6 +1344,28 @@ mod tests {
         let (token, _) = manager.review_crx("local", &first, &new_entry, None).unwrap();
         manager.approve_crx("local", token).unwrap();
         assert!(crx::installed(manager.db().unwrap(), &first, &new_entry).unwrap().is_some());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn required_proxy_survives_manager_restart_and_blocks_launch_when_unreachable() {
+        let test = tempfile::tempdir().unwrap();
+        let browser = mac_browser(test.path(), "Chromium", "io.ungoogled-software.ungoogled-chromium", "157.0.8103.78");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let manager = Manager::with_bundle(test.path().into(), Some(browser.clone())).unwrap();
+        let saved = crate::connections::save(manager.db().unwrap(), "local", "Fixture proxy", &endpoint).unwrap();
+        let connection = crate::connections::Selection::Saved { id: saved };
+        let id = insert_workspace(manager.db().unwrap(), "local", "Proxied", Settings {
+            connection: connection.clone(), ..Default::default()
+        }).unwrap();
+        drop(manager);
+        drop(listener);
+
+        let mut manager = Manager::with_bundle(test.path().into(), Some(browser)).unwrap();
+        assert_eq!(manager.rows("local", Some(&id)).unwrap()[0].settings.connection, connection);
+        assert!(manager.perform(&id, Operation::Open).unwrap_err().contains("No direct fallback"));
+        assert!(!manager.children.contains_key(&id));
     }
 
     #[cfg(target_os = "macos")]

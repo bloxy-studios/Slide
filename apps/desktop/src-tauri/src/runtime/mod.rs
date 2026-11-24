@@ -24,7 +24,16 @@ pub struct RuntimeInfo {
     pub bundled: bool,
 }
 
+pub enum Route {
+    Direct,
+    Proxy(crate::connections::Proxy),
+}
+
 impl RuntimeInfo {
+    pub fn supports_required_http_proxy(&self) -> bool {
+        cfg!(all(target_os = "macos", target_arch = "aarch64")) && self.bundled
+    }
+
     pub fn is_at_least(&self, minimum: &str) -> bool {
         fn parts(version: &str) -> Option<[u32; 4]> {
             let mut chunks = version.split('.');
@@ -164,6 +173,7 @@ impl Chromium {
         urls: &[String],
         reopen: bool,
         extensions: &[PathBuf],
+        route: Route,
     ) -> Result<Child, String> {
         let mut profile = OsString::from("--user-data-dir=");
         profile.push(directory);
@@ -173,6 +183,12 @@ impl Chromium {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        match route {
+            Route::Direct => { command.arg("--no-proxy-server"); }
+            Route::Proxy(proxy) => {
+                command.arg(proxy.launch_flag()).args(["--proxy-bypass-list=<-loopback>", "--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"]);
+            }
+        }
         if reopen {
             command.arg("--new-window");
             if urls.is_empty() {
