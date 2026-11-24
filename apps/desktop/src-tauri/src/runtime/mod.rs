@@ -1,3 +1,4 @@
+use crate::connections::{self, Selection};
 use serde::Serialize;
 use std::{
     ffi::{OsStr, OsString},
@@ -24,7 +25,38 @@ pub struct RuntimeInfo {
     pub bundled: bool,
 }
 
+pub enum Route {
+    System,
+    Direct,
+    Proxy(connections::Proxy),
+}
+
+impl Route {
+    pub fn resolve(db: &rusqlite::Connection, account: &str, selection: &Selection) -> Result<Self, String> {
+        Ok(match selection {
+            Selection::System => Self::System,
+            Selection::Direct => Self::Direct,
+            _ => Self::Proxy(connections::resolve(db, account, selection)?
+                .ok_or("The required HTTP proxy is not configured.")?),
+        })
+    }
+
+    fn apply(self, command: &mut Command) {
+        match self {
+            Self::System => {}
+            Self::Direct => { command.arg("--no-proxy-server"); }
+            Self::Proxy(proxy) => {
+                command.arg(proxy.launch_flag()).args(["--proxy-bypass-list=<-loopback>", "--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"]);
+            }
+        }
+    }
+}
+
 impl RuntimeInfo {
+    pub fn supports_required_http_proxy(&self) -> bool {
+        cfg!(all(target_os = "macos", target_arch = "aarch64")) && self.bundled
+    }
+
     pub fn is_at_least(&self, minimum: &str) -> bool {
         fn parts(version: &str) -> Option<[u32; 4]> {
             let mut chunks = version.split('.');
@@ -164,6 +196,7 @@ impl Chromium {
         urls: &[String],
         reopen: bool,
         extensions: &[PathBuf],
+        route: Route,
     ) -> Result<Child, String> {
         let mut profile = OsString::from("--user-data-dir=");
         profile.push(directory);
@@ -173,6 +206,7 @@ impl Chromium {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        route.apply(&mut command);
         if reopen {
             command.arg("--new-window");
             if urls.is_empty() {
@@ -267,6 +301,22 @@ fn has_profile(args: &[OsString], directory: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_settings_keep_system_proxy_and_only_explicit_direct_disables_it() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for (json, expected) in [
+            ("{}", vec![]),
+            (r#"{"connection":{"mode":"system"}}"#, vec![]),
+            (r#"{"connection":{"mode":"direct"}}"#, vec!["--no-proxy-server"]),
+        ] {
+            let settings: crate::catalog::Settings = serde_json::from_str(json).unwrap();
+            let mut command = Command::new("chromium");
+            Route::resolve(&db, "local", &settings.connection).unwrap().apply(&mut command);
+            assert_eq!(command.get_args().collect::<Vec<_>>(),
+                       expected.into_iter().map(OsStr::new).collect::<Vec<_>>());
+        }
+    }
 
     #[test]
     fn reused_pid_and_unrelated_profile_fail_identity_verification() {

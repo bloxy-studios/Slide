@@ -22,6 +22,7 @@ pub struct Settings {
     pub pinned_tag_id: Option<String>,
     pub bookmark_ids: Vec<String>,
     pub extension_ids: Vec<String>,
+    pub connection: crate::connections::Selection,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +47,7 @@ pub struct CatalogView {
     pub bookmarks: Vec<Item<Bookmark>>,
     pub templates: Vec<Item<Template>>,
     pub extensions: Vec<Item<Extension>>,
+    pub connections: Vec<crate::connections::Saved>,
     pub tasks: Vec<Task>,
     pub default_template: Option<String>,
     pub view: View,
@@ -373,6 +375,7 @@ fn clear_reference(settings: &mut Settings, kind: ItemKind, id: &str) -> bool {
 }
 
 pub fn settings(db: &Connection, account: &str, mut value: Settings) -> Result<Settings> {
+    crate::connections::validate(db, account, &mut value.connection)?;
     if value.icon.chars().count() > 12
         || value.icon.chars().any(char::is_control)
         || value.notes.chars().count() > 8_000
@@ -559,6 +562,7 @@ pub fn snapshot(db: &Connection, account: String) -> Result<CatalogView> {
         bookmarks: items(db, &account, ItemKind::Bookmark)?,
         templates: items(db, &account, ItemKind::Template)?,
         extensions: items(db, &account, ItemKind::Extension)?,
+        connections: crate::connections::list(db, &account)?,
         tasks: list_tasks(db, &account)?,
         active_account: account,
         default_template,

@@ -37,6 +37,18 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
     <label>Notes<textarea rows={2} value={value.notes} maxLength={8000} onChange={e => set({ notes: e.target.value })} /></label>
     <label>Launch URLs (one HTTP(S) URL per line)<textarea rows={2} value={urlText} placeholder="http://127.0.0.1:4310"
       onChange={e => { setUrlText(e.target.value); set({ launchUrls: e.target.value.split("\n").filter(url => url.trim()) }); }} /></label>
+    <label>Connection<select value={value.connection.mode === "saved" ? value.connection.id : value.connection.mode}
+      onChange={e => {
+        const mode = e.target.value;
+        set({ connection: mode === "system" || mode === "direct" ? { mode } : mode === "workspace"
+          ? { mode, endpoint: "" } : { mode: "saved", id: mode } });
+      }}>
+      <option value="system">System default</option><option value="direct">Direct (no proxy)</option><option value="workspace">Workspace-only HTTP proxy</option>
+      {catalog.connections.map(connection => <option key={connection.id} value={connection.id}>{connection.name} (required)</option>)}
+    </select></label>
+    {value.connection.mode === "workspace" && <label>Required HTTP proxy endpoint<input required
+      value={value.connection.endpoint} onChange={e => set({ connection: { mode: "workspace", endpoint: e.target.value } })}
+      placeholder="http://127.0.0.1:4312" /></label>}
     <Checklist title="Tags" items={catalog.tags} value={value.tagIds} change={tags => set({ tagIds: tags, pinnedTagId: tags.includes(value.pinnedTagId ?? "") ? value.pinnedTagId : null })} />
     <label>Pinned tag<select value={value.pinnedTagId ?? ""} onChange={e => set({ pinnedTagId: e.target.value || null })}>
       <option value="">None</option>{catalog.tags.filter(t => value.tagIds.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}

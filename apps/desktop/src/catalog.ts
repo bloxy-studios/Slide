@@ -5,13 +5,17 @@ export const statusLabels = {
   closing: "Closing…", locked: "Profile in use", crashed: "Exited unexpectedly",
 };
 export type Operation = "open" | "focus" | "close";
+export type ConnectionSelection = { mode: "system" } | { mode: "direct" } | { mode: "saved"; id: string } | { mode: "workspace"; endpoint: string };
+export type SavedConnection = { id: string; name: string; endpoint: string };
 export type Settings = {
   icon: string; notes: string; launchUrls: string[]; folderId: string | null;
   tagIds: string[]; pinnedTagId: string | null; bookmarkIds: string[]; extensionIds: string[];
+  connection: ConnectionSelection;
 };
 export const emptySettings: Settings = {
   icon: "", notes: "", launchUrls: [], folderId: null,
   tagIds: [], pinnedTagId: null, bookmarkIds: [], extensionIds: [],
+  connection: { mode: "system" },
 };
 export type Workspace = {
   id: string; name: string; settings: Settings; status: Status; detail: string | null;
@@ -40,8 +44,12 @@ export type View = {
 export type Catalog = {
   activeAccount: string; accounts: Label[]; folders: Label[]; tags: Tag[]; bookmarks: Bookmark[];
   templates: Template[]; extensions: Extension[]; tasks: Reminder[]; defaultTemplate: string | null; view: View;
+  connections: SavedConnection[];
 };
-export type Snapshot = { runtime: Runtime | null; runtimeError: string | null; hasBundledRuntime: boolean; workspaces: Workspace[]; catalog: Catalog };
+export type Snapshot = {
+  runtime: Runtime | null; runtimeError: string | null; hasBundledRuntime: boolean;
+  platform: string; requiredHttpProxyAvailable: boolean; workspaces: Workspace[]; catalog: Catalog;
+};
 export type PreviewRow = { number: number; name: string; duplicate: boolean; completed: boolean; error: string | null };
 export type Preview = { fingerprint: string; rows: PreviewRow[] };
 
