@@ -23,9 +23,20 @@ const cache = join(tauri, `${stage}.zip`);
 const unpack = join(tauri, stage);
 const license = "../../../docs/chromium-license.txt";
 
-async function run(...command: string[]) {
-  const proc = Bun.spawn(command, { cwd: import.meta.dir, stdout: "inherit", stderr: "inherit", stdin: "inherit" });
-  if (await proc.exited !== 0) throw new Error(`${command[0]} failed (exit ${proc.exitCode}).`);
+async function run(command: string[], retryBusyDmg = false) {
+  for (let attempt = 1; ; attempt++) {
+    const proc = Bun.spawn(command, {
+      cwd: import.meta.dir, stdout: "inherit", stderr: retryBusyDmg ? "pipe" : "inherit", stdin: "inherit",
+    });
+    const stderr = proc.stderr ? await new Response(proc.stderr).text() : "";
+    if (stderr) process.stderr.write(stderr);
+    const exit = await proc.exited;
+    if (exit === 0) return;
+    if (attempt !== 1 || !stderr.includes("hdiutil: create failed - Resource busy")) {
+      throw new Error(`${command[0]} failed (exit ${exit}).`);
+    }
+    console.warn("macOS disk image creation reported a busy resource; retrying once.");
+  }
 }
 
 async function digest(path: string) {
@@ -39,7 +50,7 @@ if (!await Bun.file(cache).exists()) {
   const pending = `${cache}.download`;
   try {
     const url = `https://storage.googleapis.com/chromium-browser-snapshots/${platform}/${revision}/${file}`;
-    await run("curl", "--fail", "--location", "--retry", "2", "--max-time", "300", "--output", pending, url);
+    await run(["curl", "--fail", "--location", "--retry", "2", "--max-time", "300", "--output", pending, url]);
     if (await digest(pending) !== sha256) throw new Error("Downloaded Chromium checksum mismatch.");
     await rename(pending, cache);
   } finally {
@@ -62,14 +73,14 @@ const bundle = process.platform === "darwin" ? {
   resources: { [license]: "chromium/LICENSE.txt", [`${stage}/chrome-win/`]: "chromium/" },
 };
 if (process.platform === "darwin") {
-  await run("/usr/bin/ditto", "-x", "-k", cache, unpack);
+  await run(["/usr/bin/ditto", "-x", "-k", cache, unpack]);
   const app = join(unpack, "chrome-mac", "Chromium.app");
-  await run("/usr/bin/codesign", "--force", "--deep", "--sign", "-", app);
-  await run("/usr/bin/codesign", "--verify", "--deep", "--strict", app);
+  await run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", app]);
+  await run(["/usr/bin/codesign", "--verify", "--deep", "--strict", app]);
 } else {
-  await run("tar.exe", "-xf", cache, "-C", unpack,
-    "--exclude=chrome-win/interactive_ui_tests.exe", "--exclude=chrome-win/setup.exe");
+  await run(["tar.exe", "-xf", cache, "-C", unpack,
+    "--exclude=chrome-win/interactive_ui_tests.exe", "--exclude=chrome-win/setup.exe"]);
 }
 const configPath = join(tauri, `${stage}.json`);
 await writeFile(configPath, JSON.stringify({ bundle }));
-await run("bun", "run", "tauri", "build", "--config", configPath, ...args);
+await run(["bun", "run", "tauri", "build", "--config", configPath, ...args], process.platform === "darwin");
