@@ -33,6 +33,7 @@ const defaultFingerprint: Fingerprint = {
 function FingerprintFields({ value, change, patched }: { value?: Fingerprint; change: (value: Fingerprint) => void; patched: boolean }) {
   const config = value ?? defaultFingerprint;
   const set = (fields: Partial<Fingerprint>) => change({ ...config, ...fields });
+  const needsBrandVersion = config.brand === "Opera" || config.brand === "Vivaldi";
   return <fieldset><legend>Fingerprint</legend>
     <p>{patched ? "These settings take effect the next time the workspace starts." : "This runtime supports language and WebRTC flags only."}</p>
     {patched && <>
@@ -42,7 +43,16 @@ function FingerprintFields({ value, change, patched }: { value?: Fingerprint; ch
         <label>UA / Client Hints brand<select value={config.brand} onChange={e => set({ brand: e.target.value })}>
           <option value="">Chromium default</option>{["Chrome", "Edge", "Opera", "Vivaldi"].map(name => <option key={name}>{name}</option>)}
         </select></label>
-        <label>UA / Client Hints version<input value={config.brandVersion} onChange={e => set({ brandVersion: e.target.value })} maxLength={32} /></label>
+        <label>UA / Client Hints version{needsBrandVersion ? " (required)" : ""}<input required={needsBrandVersion}
+          onInvalid={event => {
+            const field = event.currentTarget;
+            const section = field.closest("details");
+            if (section && !section.open) {
+              section.open = true;
+              field.focus();
+            }
+          }}
+          value={config.brandVersion} onChange={e => set({ brandVersion: e.target.value })} maxLength={32} /></label>
         <label>Platform<select value={config.platform} onChange={e => set({ platform: e.target.value })}>
           <option value="">Browser default</option>{["windows", "linux", "macos"].map(name => <option key={name}>{name}</option>)}
         </select></label>

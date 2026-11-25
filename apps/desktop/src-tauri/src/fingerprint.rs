@@ -32,6 +32,9 @@ impl Config {
             value.len() <= max
                 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || punctuation.contains(&byte))
         }
+        if matches!(self.brand.as_str(), "Opera" | "Vivaldi") && self.brand_version.is_empty() {
+            return Err(format!("Enter a browser version for {}.", self.brand));
+        }
         if !matches!(self.platform.as_str(), "" | "windows" | "linux" | "macos")
             || !matches!(self.brand.as_str(), "" | "Chrome" | "Edge" | "Opera" | "Vivaldi")
             || !token(&self.platform_version, 32, b".")
@@ -89,6 +92,17 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opera_and_vivaldi_require_explicit_versions() {
+        for (brand, version) in [("Opera", "114.0.0.0"), ("Vivaldi", "7.0.0.0")] {
+            let mut config = Config { brand: brand.into(), seed: Some(42), ..Config::default() };
+            assert!(config.validate().unwrap_err().contains(brand));
+            config.brand_version = version.into();
+            config.validate().unwrap();
+            assert!(config.flags(true).contains(&format!("--fingerprint-brand-version={version}")));
+        }
+    }
 
     #[test]
     fn only_patched_browser_receives_fingerprint_switches() {
