@@ -2,7 +2,9 @@
 
 A desktop manager for persistent, isolated browser workspaces.
 
-Slide Workspaces is local-only through Milestone B. Development installers include Chromium as the default runtime; you can also choose an installed Chrome or Chromium. **Open** uses a normal browser window and a private data directory for that workspace. Workspace management, import, templates, reminders and trash work offline. External sites and the Chrome Web Store still need network access.
+Slide Workspaces works locally without a sign-in. Development installers include Chromium; you can also choose an installed Chrome or Chromium. **Start** uses a normal browser window and a private data directory for that workspace. Workspace management, import, templates, reminders and trash work offline. External sites, the Chrome Web Store, and the optional shared-workspace service need network access.
+
+[Installers](docs/packaging.md) · [Platform compatibility](docs/platform-compatibility.md) · [Support and recovery](docs/support.md) · [Feature status](docs/feature-matrix.md) · [Acceptance evidence](docs/acceptance.md)
 
 ## Run
 

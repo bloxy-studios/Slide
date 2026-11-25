@@ -11,6 +11,7 @@ mod runtime;
 mod startup;
 mod fingerprint;
 mod sync;
+mod support;
 
 use catalog::{Bookmark, ItemKind, Label, Settings, Tag, TaskDraft, Template, View};
 use manager::{insert_workspace, Manager, Snapshot, TrashAction};
@@ -494,9 +495,11 @@ fn main() {
             let fingerprint = fingerprint.exists().then_some(fingerprint);
             match Manager::with_bundles(root, bundled, fingerprint) {
                 Ok(manager) => {
+                    support::log_start(app.handle(), true);
                     app.manage(Mutex::new(manager));
                 }
                 Err(error) => {
+                    support::log_start(app.handle(), false);
                     app.manage(Mutex::new(Manager::unavailable(error)));
                 }
             }
@@ -504,6 +507,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            support::support_info,
+            support::export_support,
+            support::open_support_docs,
+            support::restart_manager,
             automation_bridge,
             set_automation_cdp,
             seal_workspace,

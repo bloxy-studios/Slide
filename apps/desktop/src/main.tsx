@@ -4,6 +4,7 @@ import { Connections } from "./connections";
 import { Automation } from "./automation";
 import { Cloud } from "./cloud";
 import { Diagnostics } from "./diagnostics";
+import { Support } from "./support";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { FormEvent, ReactNode } from "react";
@@ -13,7 +14,7 @@ import { Checklist, ExtensionForm, kinds, LibraryForm, TaskForm, Tasks, Workspac
 import type { LibraryItem, LibraryKind, Run } from "./forms";
 import "./style.css";
 
-type Tab = "Workspaces" | "Library" | "Shared" | "Connections" | "Reminders" | "Import" | "Extensions" | "Automation" | "Diagnostics" | "Trash";
+type Tab = "Workspaces" | "Library" | "Shared" | "Connections" | "Reminders" | "Import" | "Extensions" | "Automation" | "Diagnostics" | "Trash" | "Support";
 type WorkspaceMode = "manual" | "quick" | "template" | "clone" | "edit";
 type BatchAction = "open" | "close" | "tag" | "folder" | "network" | "trash" | "restore" | "purge";
 type ExtensionInstallOptions = { bundled: boolean; installedVersion: string | null; updateAvailable: boolean };
@@ -27,10 +28,10 @@ type Modal =
   | { type: "account" | "task" }
   | { type: "confirm"; title: string; detail: string; confirm: () => void };
 
-const tabs: Tab[] = ["Workspaces", "Library", "Shared", "Connections", "Reminders", "Import", "Extensions", "Automation", "Diagnostics", "Trash"];
+const tabs: Tab[] = ["Workspaces", "Library", "Shared", "Connections", "Reminders", "Import", "Extensions", "Automation", "Diagnostics", "Trash", "Support"];
 const tabLabel: Partial<Record<Tab, string>> = { Workspaces: "Profiles", Connections: "Proxy", Import: "Bulk import" };
 const tabIcon: Record<Tab, string> = { Workspaces: "▣", Library: "▤", Shared: "◇", Connections: "⇄", Reminders: "◷",
-  Import: "⇥", Extensions: "⊞", Automation: "⌘", Diagnostics: "◎", Trash: "⊘" };
+  Import: "⇥", Extensions: "⊞", Automation: "⌘", Diagnostics: "◎", Trash: "⊘", Support: "?" };
 const batchLabels: Record<BatchAction, string> = {
   open: "Open", close: "Close", tag: "Add tag", folder: "Move to folder",
   network: "Test fixture route", trash: "Move to trash", restore: "Restore", purge: "Permanently delete",
@@ -346,6 +347,7 @@ function App() {
     </section>
     <p className="announcement error" role="alert">{!modal && error}</p>
     <p className="announcement" role="status">{notice}</p>
+    {tab === "Support" && <Support />}
     {jobRunning && <div className="actions job-control"><a href="#batch-result">View {jobTitle.toLowerCase()} progress</a>
       <button onClick={() => { stopJob.current = true; }}>Cancel remaining</button></div>}
     {catalog && currentView && <>
