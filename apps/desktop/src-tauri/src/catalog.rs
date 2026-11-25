@@ -23,6 +23,8 @@ pub struct Settings {
     pub bookmark_ids: Vec<String>,
     pub extension_ids: Vec<String>,
     pub connection: crate::connections::Selection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<crate::fingerprint::Config>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +378,9 @@ fn clear_reference(settings: &mut Settings, kind: ItemKind, id: &str) -> bool {
 
 pub fn settings(db: &Connection, account: &str, mut value: Settings) -> Result<Settings> {
     crate::connections::validate(db, account, &mut value.connection)?;
+    if let Some(fingerprint) = &value.fingerprint {
+        fingerprint.validate()?;
+    }
     if value.icon.chars().count() > 12
         || value.icon.chars().any(char::is_control)
         || value.notes.chars().count() > 8_000

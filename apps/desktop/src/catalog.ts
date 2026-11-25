@@ -7,10 +7,17 @@ export const statusLabels = {
 export type Operation = "open" | "focus" | "close";
 export type ConnectionSelection = { mode: "system" } | { mode: "direct" } | { mode: "saved"; id: string } | { mode: "workspace"; endpoint: string };
 export type SavedConnection = { id: string; name: string; endpoint: string };
+export type Fingerprint = {
+  seed: number | null; platform: string; platformVersion: string;
+  brand: string; brandVersion: string; hardwareConcurrency: number | null;
+  language: string; timezone: string; restrictWebrtc: boolean; nativeSurfaces: string[];
+  deviceName: string; macAddress: string;
+};
 export type Settings = {
   icon: string; notes: string; launchUrls: string[]; folderId: string | null;
   tagIds: string[]; pinnedTagId: string | null; bookmarkIds: string[]; extensionIds: string[];
   connection: ConnectionSelection;
+  fingerprint?: Fingerprint;
 };
 export const emptySettings: Settings = {
   icon: "", notes: "", launchUrls: [], folderId: null,
@@ -20,6 +27,7 @@ export const emptySettings: Settings = {
 export type Workspace = {
   id: string; name: string; settings: Settings; status: Status; detail: string | null;
   automationCdp: boolean;
+  browserBrand: string | null;
   canClose: boolean; createdAt: number; trashedAt: number | null;
 };
 export type Label = { id: string; name: string };

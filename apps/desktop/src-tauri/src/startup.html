@@ -37,9 +37,12 @@
     <dt>Approximate location</dt><dd id="geo">—</dd>
     <dt>Last checked</dt><dd id="time">—</dd>
   </dl><p>This checks one HTTPS request from this browser. It does not verify every network route.</p></article>
-  <article><h2>Fingerprint info</h2><p>These are the browser’s reported values. Slide does not spoof them.</p><dl>
+  <article><h2>Fingerprint info</h2><p>These are values read from the running browser, not the profile’s settings.</p><dl>
     <dt>User agent</dt><dd id="agent">—</dd>
     <dt>Platform</dt><dd id="platform">—</dd>
+    <dt>Client Hints brands</dt><dd id="brands">—</dd>
+    <dt>Logical CPU cores</dt><dd id="cores">—</dd>
+    <dt>Device memory</dt><dd id="memory">—</dd>
     <dt>Language</dt><dd id="language">—</dd>
     <dt>Time zone</dt><dd id="zone">—</dd>
     <dt>Screen</dt><dd id="screen">—</dd>
@@ -50,6 +53,9 @@
   const retry = document.getElementById("retry");
   write("agent", navigator.userAgent);
   write("platform", navigator.userAgentData?.platform || navigator.platform);
+  write("brands", navigator.userAgentData?.brands.map(({ brand, version }) => brand + " " + version).join(", "));
+  write("cores", navigator.hardwareConcurrency);
+  write("memory", navigator.deviceMemory && navigator.deviceMemory + " GiB");
   write("language", navigator.language);
   write("zone", Intl.DateTimeFormat().resolvedOptions().timeZone);
   write("screen", screen.width + " × " + screen.height);

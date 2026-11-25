@@ -126,6 +126,20 @@ impl Chromium {
         path
     }
 
+    pub fn fingerprint_path(resources: &Path) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        let path = resources.join("../Frameworks/Fingerprint Chromium.app");
+        #[cfg(target_os = "windows")]
+        let path = resources.join("fingerprint-chromium/chrome.exe");
+        path
+    }
+
+    pub fn inspect_fingerprint(path: &Path) -> Result<RuntimeInfo, String> {
+        let mut runtime = Self::inspect_bundled(path)?;
+        runtime.brand = "fingerprint-chromium".into();
+        Ok(runtime)
+    }
+
     pub fn inspect_bundled(path: &Path) -> Result<RuntimeInfo, String> {
         let mut runtime = native::inspect(path)
             .map_err(|error| format!("Bundled Chromium is unavailable: {error} Reinstall Slide or choose another browser."))?;
@@ -198,6 +212,7 @@ impl Chromium {
         extensions: &[PathBuf],
         route: &Route,
         debugging: bool,
+        fingerprint_flags: &[String],
     ) -> Result<Child, String> {
         let mut profile = OsString::from("--user-data-dir=");
         profile.push(directory);
@@ -207,6 +222,7 @@ impl Chromium {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        command.args(fingerprint_flags);
         route.apply(&mut command);
         if debugging {
             command.args(["--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0"]);

@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
-import type { Catalog, Extension, Label, Reminder, Settings, Workspace } from "./catalog";
+import type { Catalog, Extension, Fingerprint, Label, Reminder, Settings, Workspace } from "./catalog";
 import { emptySettings, localTime } from "./catalog";
 
 export type Run = (command: string, args: Record<string, unknown>, success: string, close?: boolean) => void;
@@ -24,7 +24,48 @@ export function Checklist({ title, items, value, change }: {
   </fieldset>;
 }
 
-function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: Settings; change: (s: Settings) => void }) {
+const defaultFingerprint: Fingerprint = {
+  seed: null, platform: "", platformVersion: "", brand: "", brandVersion: "",
+  hardwareConcurrency: null, language: "", timezone: "", restrictWebrtc: false,
+  nativeSurfaces: [], deviceName: "", macAddress: "",
+};
+
+function FingerprintFields({ value, change, patched }: { value?: Fingerprint; change: (value: Fingerprint) => void; patched: boolean }) {
+  const config = value ?? defaultFingerprint;
+  const set = (fields: Partial<Fingerprint>) => change({ ...config, ...fields });
+  return <fieldset><legend>Fingerprint</legend>
+    <p>{patched ? "These settings take effect the next time the workspace starts." : "This runtime supports language and WebRTC flags only."}</p>
+    {patched && <>
+      <p>Seed: {config.seed ?? "Assigned on creation"} · Device memory is selected by the browser from the seed.</p>
+      <button type="button" onClick={() => set({ seed: crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff })}>Refresh fingerprint</button>
+      <div className="form-grid">
+        <label>UA / Client Hints brand<select value={config.brand} onChange={e => set({ brand: e.target.value })}>
+          <option value="">Chromium default</option>{["Chrome", "Edge", "Opera", "Vivaldi"].map(name => <option key={name}>{name}</option>)}
+        </select></label>
+        <label>UA / Client Hints version<input value={config.brandVersion} onChange={e => set({ brandVersion: e.target.value })} maxLength={32} /></label>
+        <label>Platform<select value={config.platform} onChange={e => set({ platform: e.target.value })}>
+          <option value="">Browser default</option>{["windows", "linux", "macos"].map(name => <option key={name}>{name}</option>)}
+        </select></label>
+        <label>Platform version<input value={config.platformVersion} onChange={e => set({ platformVersion: e.target.value })} maxLength={32} /></label>
+        <label>CPU cores<input type="number" min={1} max={128} value={config.hardwareConcurrency ?? ""}
+          onChange={e => set({ hardwareConcurrency: e.target.value ? e.target.valueAsNumber : null })} /></label>
+        <label>Time zone<input value={config.timezone} onChange={e => set({ timezone: e.target.value })} placeholder="America/Los_Angeles" maxLength={64} /></label>
+      </div>
+      <div className="checks">{Object.entries({ canvas: "Canvas", gpu: "WebGL / GPU", audio: "Audio", clientrects: "ClientRects", font: "Fonts" }).map(([key, label]) =>
+        <label key={key}><input type="checkbox" checked={!config.nativeSurfaces.includes(key)}
+          onChange={e => set({ nativeSurfaces: e.target.checked ? config.nativeSurfaces.filter(surface => surface !== key) : [...config.nativeSurfaces, key] })} />{label} noise</label>,
+      )}</div>
+    </>}
+    <label>Language<input value={config.language} onChange={e => set({ language: e.target.value })} placeholder="en-US" maxLength={35} /></label>
+    <label><input type="checkbox" checked={config.restrictWebrtc} onChange={e => set({ restrictWebrtc: e.target.checked })} /> Block non-proxied WebRTC UDP</label>
+    <div className="form-grid">
+      <label>Device name (not web-exposed)<input value={config.deviceName} onChange={e => set({ deviceName: e.target.value })} maxLength={100} /></label>
+      <label>MAC address (not web-exposed)<input value={config.macAddress} onChange={e => set({ macAddress: e.target.value })} maxLength={17} /></label>
+    </div>
+  </fieldset>;
+}
+
+function SettingsFields({ catalog, value, change, browser }: { catalog: Catalog; value: Settings; change: (s: Settings) => void; browser?: string }) {
   const [urlText, setUrlText] = useState(value.launchUrls.join("\n"));
   const set = (changes: Partial<Settings>) => change({ ...value, ...changes });
   return <>
@@ -64,6 +105,7 @@ function SettingsFields({ catalog, value, change }: { catalog: Catalog; value: S
       placeholder="http://127.0.0.1:4312" /></label>}
     </details>
     <details className="profile-section"><summary>Advanced settings</summary>
+    {browser && <FingerprintFields value={value.fingerprint} change={fingerprint => set({ fingerprint })} patched={browser === "fingerprint-chromium"} />}
     <Checklist title="Tags" items={catalog.tags} value={value.tagIds} change={tags => set({ tagIds: tags, pinnedTagId: tags.includes(value.pinnedTagId ?? "") ? value.pinnedTagId : null })} />
     <label>Pinned tag<select value={value.pinnedTagId ?? ""} onChange={e => set({ pinnedTagId: e.target.value || null })}>
       <option value="">None</option>{catalog.tags.filter(t => value.tagIds.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -82,6 +124,7 @@ export function WorkspaceForm({ catalog, mode: initialMode, workspace, run, busy
   const [name, setName] = useState(mode === "clone" ? `${workspace?.name} copy`.slice(0, 100) : workspace?.name ?? "");
   const [settings, setSettings] = useState(workspace?.settings ?? emptySettings);
   const [template, setTemplate] = useState(catalog.defaultTemplate ?? catalog.templates[0]?.id ?? "");
+  const profileBrowser = mode === "edit" ? workspace?.browserBrand || browser : browser;
   return <form onSubmit={e => {
     e.preventDefault();
     if (mode === "edit") run("edit_workspace", { name, id: workspace?.id, settings }, `Updated ${name}.`, true);
@@ -99,7 +142,7 @@ export function WorkspaceForm({ catalog, mode: initialMode, workspace, run, busy
     </nav>}
     <div className="profile-layout"><div className="profile-fields">
     <label>Name<input required maxLength={100} value={name} autoFocus onChange={e => setName(e.target.value)} /></label>
-    {mode === "manual" || mode === "edit" ? <SettingsFields catalog={catalog} value={settings} change={setSettings} /> : null}
+    {mode === "manual" || mode === "edit" ? <SettingsFields catalog={catalog} value={settings} change={setSettings} browser={profileBrowser} /> : null}
     {mode === "template" && <label>Template<select required value={template} onChange={e => setTemplate(e.target.value)}>
       {catalog.templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
     </select></label>}
@@ -109,10 +152,14 @@ export function WorkspaceForm({ catalog, mode: initialMode, workspace, run, busy
       <h3>Browser profile overview</h3>
       <dl>
         <dt>Profile</dt><dd>{name || "Untitled profile"}</dd>
-        <dt>Browser</dt><dd>{browser || "Not configured"}</dd>
+        <dt>Browser</dt><dd>{profileBrowser || "Not configured"}</dd>
         <dt>Session</dt><dd>Isolated local browser profile</dd>
         <dt>Connection</dt><dd>{mode === "manual" || mode === "edit" ? ({ system: "System default", direct: "Direct", workspace: "Workspace-only HTTP proxy", saved: "Saved HTTP proxy" })[settings.connection.mode] : "From selected creation settings"}</dd>
-        <dt>Fingerprint</dt><dd>Native browser values</dd>
+        <dt>Fingerprint</dt><dd>{profileBrowser === "fingerprint-chromium"
+          ? `Seed ${settings.fingerprint?.seed ?? (mode === "edit" ? "not set" : "assigned on creation")}`
+          : "Native device values"}</dd>
+        <dt>Language</dt><dd>{settings.fingerprint?.language || "Browser default"}</dd>
+        {profileBrowser === "fingerprint-chromium" && <><dt>Time zone</dt><dd>{settings.fingerprint?.timezone || "Browser default"}</dd></>}
       </dl>
     </aside></div>
     <div className="actions"><button type="button" onClick={cancel}>Cancel</button><button className="primary" disabled={busy}>{mode === "edit" ? "Save workspace" : "Create workspace"}</button></div>

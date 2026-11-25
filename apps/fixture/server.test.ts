@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fixture } from "./server";
 
 test("role cookies are independent and creator page enforces permission", async () => {
@@ -43,6 +46,55 @@ test("the QA-only fixture hides links to the absent second origin", async () => 
     await server.stop(true);
   }
 });
+
+test("the fingerprint fixture is local to the primary fixture origin", async () => {
+  const primary = fixture(0);
+  const secondary = fixture(0, true);
+  try {
+    const response = await fetch(new URL("/qa/fingerprint", primary.url));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("canvasHash");
+    expect((await fetch(new URL("/qa/fingerprint", secondary.url))).status).toBe(404);
+  } finally {
+    await primary.stop(true);
+    await secondary.stop(true);
+  }
+});
+
+const fingerprintBrowser = process.env.SLIDE_TEST_FINGERPRINT_BROWSER;
+test.skipIf(!fingerprintBrowser)("patched Chromium applies workspace fingerprint settings to the fixture", async () => {
+  const server = fixture(0);
+  const root = await mkdtemp(join(tmpdir(), "slide-fingerprint-test-"));
+  async function read(seed: number, cores: number) {
+    const browser = Bun.spawn([
+      fingerprintBrowser!, "--headless", "--no-first-run", "--disable-background-networking",
+      "--use-mock-keychain", `--user-data-dir=${join(root, String(seed))}`,
+      `--fingerprint=${seed}`, `--fingerprint-hardware-concurrency=${cores}`, "--timezone=UTC",
+      "--fingerprint-platform=windows", new URL("/qa/fingerprint", server.url).href, "--dump-dom",
+    ], { stdout: "pipe", stderr: "ignore" });
+    const result = Promise.all([new Response(browser.stdout).text(), browser.exited]);
+    const timeout = setTimeout(() => browser.kill(), 15_000);
+    try {
+      const [html, status] = await result;
+      expect(status).toBe(0);
+      const output = html.match(/<pre id="readings">([\s\S]+?)<\/pre>/);
+      expect(output).not.toBeNull();
+      return JSON.parse(output![1]) as { cores: number; timezone: string; platform: string; canvasHash: string };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  try {
+    const a = await read(12345, 7);
+    const b = await read(54321, 11);
+    expect(a).toMatchObject({ cores: 7, timezone: "UTC", platform: "Win32" });
+    expect(b).toMatchObject({ cores: 11, timezone: "UTC", platform: "Win32" });
+    expect(a.canvasHash).not.toBe(b.canvasHash);
+  } finally {
+    await server.stop(true);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 35_000);
 
 test("the owned fixture round-trips synthetic cookies in both formats and refuses unsupported attributes", async () => {
   const server = fixture(0);

@@ -22,6 +22,11 @@ const tauri = join(import.meta.dir, "src-tauri");
 const stage = `target/chromium-${id}`;
 const cache = join(tauri, "target", file);
 const unpack = join(tauri, stage);
+const fingerprintBuilds = {
+  "aarch64-apple-darwin": ["148.0.7778.215", "macos.dmg", "b72f091e2e1a7583eed389c4b8e3534ed355e568af8c8bbf8fc30a25e23ca679"],
+  "x86_64-apple-darwin": null,
+  "x86_64-pc-windows-msvc": ["150.0.7871.186", "windows_x64.zip", "4d549c326e51ebbabf562fd365eb5380d9d4a81200da2c60f075c688d9a77e03"],
+} as const;
 const licenses = {
   "../../../docs/chromium-license.txt": "chromium/LICENSE.txt",
   "../../../docs/ungoogled-chromium-license.txt": "chromium/LICENSE-ungoogled.txt",
@@ -49,38 +54,25 @@ async function digest(path: string) {
   return hash.digest("hex");
 }
 
-await mkdir(join(tauri, "target"), { recursive: true });
-if (!await Bun.file(cache).exists()) {
-  const pending = `${cache}.download`;
-  try {
-    const url = `https://github.com/ungoogled-software/ungoogled-chromium-${platform}/releases/download/${release}/${file}`;
-    await run(["curl", "--fail", "--location", "--retry", "2", "--max-time", "300", "--output", pending, url]);
-    if (await digest(pending) !== sha256) throw new Error("Downloaded Chromium checksum mismatch.");
-    await rename(pending, cache);
-  } finally {
-    await rm(pending, { force: true });
+async function download(path: string, url: string, checksum: string) {
+  if (!await Bun.file(path).exists()) {
+    const pending = `${path}.download`;
+    try {
+      await run(["curl", "--fail", "--location", "--retry", "2", "--max-time", "300", "--output", pending, url]);
+      if (await digest(pending) !== checksum) throw new Error("Downloaded Chromium checksum mismatch.");
+      await rename(pending, path);
+    } finally {
+      await rm(pending, { force: true });
+    }
+  } else if (await digest(path) !== checksum) {
+    throw new Error(`Chromium checksum mismatch. Remove ${path} and rebuild.`);
   }
-} else if (await digest(cache) !== sha256) {
-  throw new Error(`Chromium checksum mismatch. Remove ${cache} and rebuild.`);
 }
 
-await rm(unpack, { recursive: true, force: true });
-await mkdir(unpack);
-const bundle = process.platform === "darwin" ? {
-  resources: licenses,
-  macOS: {
-    signingIdentity: "-",
-    hardenedRuntime: false,
-    files: { "Frameworks/Chromium.app": `${stage}/Chromium.app` },
-  },
-} : {
-  resources: { ...licenses, [`${stage}/chrome-win/`]: "chromium/" },
-};
-if (process.platform === "darwin") {
+async function extractMac(image: string, app: string) {
   const mount = await mkdtemp(join(tauri, "target", "ungoogled-mount-"));
-  const app = join(unpack, "Chromium.app");
   try {
-    await run(["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", mount, cache]);
+    await run(["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", mount, image]);
     try {
       await run(["/usr/bin/ditto", "--norsrc", join(mount, "Chromium.app"), app]);
     } finally {
@@ -91,11 +83,43 @@ if (process.platform === "darwin") {
   }
   await run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", app]);
   await run(["/usr/bin/codesign", "--verify", "--deep", "--strict", app]);
-} else {
-  const windows = join(unpack, "chrome-win");
-  await mkdir(windows);
-  await run(["tar.exe", "-xf", cache, "-C", windows, "--strip-components", "1"]);
 }
+
+async function extractWindows(zip: string, directory: string) {
+  await mkdir(directory);
+  await run(["tar.exe", "-xf", zip, "-C", directory, "--strip-components", "1"]);
+}
+
+await mkdir(join(tauri, "target"), { recursive: true });
+await download(cache, `https://github.com/ungoogled-software/ungoogled-chromium-${platform}/releases/download/${release}/${file}`, sha256);
+await rm(unpack, { recursive: true, force: true });
+await mkdir(unpack);
+const resources: Record<string, string> = { ...licenses };
+const macFiles: Record<string, string> = {};
+if (process.platform === "darwin") {
+  await extractMac(cache, join(unpack, "Chromium.app"));
+  macFiles["Frameworks/Chromium.app"] = `${stage}/Chromium.app`;
+} else {
+  await extractWindows(cache, join(unpack, "chrome-win"));
+  resources[`${stage}/chrome-win/`] = "chromium/";
+}
+const fingerprint = fingerprintBuilds[target];
+if (fingerprint) {
+  const [version, asset, checksum] = fingerprint;
+  const name = `ungoogled-chromium_${version}-1.1_${asset}`;
+  const archive = join(tauri, "target", name);
+  await download(archive, `https://github.com/adryfish/fingerprint-chromium/releases/download/${version}/${name}`, checksum);
+  resources["../../../docs/fingerprint-chromium-license.txt"] = "fingerprint-chromium/LICENSE.txt";
+  if (process.platform === "darwin") {
+    await extractMac(archive, join(unpack, "Fingerprint Chromium.app"));
+    macFiles["Frameworks/Fingerprint Chromium.app"] = `${stage}/Fingerprint Chromium.app`;
+  } else {
+    await extractWindows(archive, join(unpack, "fingerprint-win"));
+    resources[`${stage}/fingerprint-win/`] = "fingerprint-chromium/";
+  }
+}
+const bundle = process.platform === "darwin" ?
+  { resources, macOS: { signingIdentity: "-", hardenedRuntime: false, files: macFiles } } : { resources };
 const configPath = join(tauri, `${stage}.json`);
 await writeFile(configPath, JSON.stringify({ bundle }));
 await run(["bun", "run", "tauri", "build", "--config", configPath, ...args], process.platform === "darwin");

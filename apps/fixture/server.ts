@@ -58,6 +58,9 @@ export function fixture(port = 4310, isolated = false, secondOrigin: string | nu
       if (!isolated && url.pathname === "/route") {
         return new Response(`Slide QA route: ${route}\n`, { headers: { ...headers, "Content-Type": "text/plain; charset=utf-8", "X-Slide-Fixture-Route": route } });
       }
+      if (!isolated && url.pathname === "/qa/fingerprint") {
+        return new Response(fingerprintPage, { headers });
+      }
       if (!["/", "/creator", "/bookmarks", "/qa"].includes(url.pathname) || isolated && url.pathname !== "/") {
         return new Response("Not found", { status: 404 });
       }
@@ -116,6 +119,33 @@ export function fixture(port = 4310, isolated = false, secondOrigin: string | nu
     },
   });
 }
+
+const fingerprintPage = `<!doctype html><html lang="en"><meta charset="utf-8">
+<title>Slide fingerprint fixture</title><h1>Slide fingerprint fixture</h1>
+<p>Browser readings stay on this local page.</p><pre id="readings"></pre>
+<script>
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d");
+ctx.fillStyle = "#326bc0";
+ctx.fillRect(0, 0, 160, 65);
+ctx.font = "18px sans-serif";
+ctx.fillStyle = "#f8e3b4";
+ctx.fillText("Slide local QA 🛝", 7, 35);
+let hash = 2166136261;
+for (const byte of ctx.getImageData(0, 0, canvas.width, canvas.height).data) {
+  hash = Math.imul(hash ^ byte, 16777619);
+}
+const gl = document.createElement("canvas").getContext("webgl");
+const debug = gl?.getExtension("WEBGL_debug_renderer_info");
+document.getElementById("readings").textContent = JSON.stringify({
+  userAgent: navigator.userAgent, platform: navigator.platform,
+  clientHints: navigator.userAgentData?.toJSON(), cores: navigator.hardwareConcurrency,
+  memory: navigator.deviceMemory, languages: navigator.languages,
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  canvasHash: (hash >>> 0).toString(16).padStart(8, "0"),
+  webglVendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : gl?.getParameter(gl.VENDOR),
+}, null, 2);
+</script>`;
 
 if (import.meta.main) {
   const qaOnly = process.argv.includes("--qa-only");
