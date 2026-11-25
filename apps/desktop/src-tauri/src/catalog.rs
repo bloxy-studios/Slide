@@ -378,7 +378,8 @@ fn clear_reference(settings: &mut Settings, kind: ItemKind, id: &str) -> bool {
 
 pub fn settings(db: &Connection, account: &str, mut value: Settings) -> Result<Settings> {
     crate::connections::validate(db, account, &mut value.connection)?;
-    if let Some(fingerprint) = &value.fingerprint {
+    if let Some(fingerprint) = &mut value.fingerprint {
+        fingerprint.clear_unused_versions();
         fingerprint.validate()?;
     }
     if value.icon.chars().count() > 12

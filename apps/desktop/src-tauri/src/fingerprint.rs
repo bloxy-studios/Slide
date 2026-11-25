@@ -27,6 +27,15 @@ impl Config {
         true
     }
 
+    pub fn clear_unused_versions(&mut self) {
+        if self.platform.is_empty() {
+            self.platform_version.clear();
+        }
+        if self.brand.is_empty() {
+            self.brand_version.clear();
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         fn token(value: &str, max: usize, punctuation: &[u8]) -> bool {
             value.len() <= max
@@ -69,14 +78,15 @@ impl Config {
         }
         let Some(seed) = self.seed else { return flags };
         flags.push(format!("--fingerprint={seed}"));
-        for (flag, value) in [
-            ("fingerprint-platform", &self.platform),
-            ("fingerprint-platform-version", &self.platform_version),
-            ("fingerprint-brand", &self.brand),
-            ("fingerprint-brand-version", &self.brand_version),
+        for (flag, value, version) in [
+            ("fingerprint-platform", &self.platform, &self.platform_version),
+            ("fingerprint-brand", &self.brand, &self.brand_version),
         ] {
             if !value.is_empty() {
                 flags.push(format!("--{flag}={value}"));
+                if !version.is_empty() {
+                    flags.push(format!("--{flag}-version={version}"));
+                }
             }
         }
         if let Some(cores) = self.hardware_concurrency {
@@ -102,6 +112,28 @@ mod tests {
             config.validate().unwrap();
             assert!(config.flags(true).contains(&format!("--fingerprint-brand-version={version}")));
         }
+    }
+
+    #[test]
+    fn default_brand_and_platform_do_not_save_or_pass_unused_versions() {
+        let mut config = Config {
+            seed: Some(42), platform_version: "15.2.0".into(), brand_version: "150.0.0.0".into(),
+            ..Config::default()
+        };
+        assert_eq!(config.flags(true), ["--fingerprint=42"]);
+        config.clear_unused_versions();
+        assert!(config.brand_version.is_empty());
+        assert!(config.platform_version.is_empty());
+
+        config.platform = "macos".into();
+        config.platform_version = "15.2.0".into();
+        config.brand = "Chrome".into();
+        config.brand_version = "150.0.0.0".into();
+        config.clear_unused_versions();
+        assert_eq!(config.flags(true), [
+            "--fingerprint=42", "--fingerprint-platform=macos", "--fingerprint-platform-version=15.2.0",
+            "--fingerprint-brand=Chrome", "--fingerprint-brand-version=150.0.0.0",
+        ]);
     }
 
     #[test]

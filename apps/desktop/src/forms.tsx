@@ -40,7 +40,10 @@ function FingerprintFields({ value, change, patched }: { value?: Fingerprint; ch
       <p>Seed: {config.seed ?? "Assigned on creation"} · Device memory is selected by the browser from the seed.</p>
       <button type="button" onClick={() => set({ seed: crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff })}>Refresh fingerprint</button>
       <div className="form-grid">
-        <label>UA / Client Hints brand<select value={config.brand} onChange={e => set({ brand: e.target.value })}>
+        <label>UA / Client Hints brand<select value={config.brand} onChange={e => {
+          const brand = e.target.value;
+          set({ brand, brandVersion: brand && config.brand ? config.brandVersion : "" });
+        }}>
           <option value="">Chromium default</option>{["Chrome", "Edge", "Opera", "Vivaldi"].map(name => <option key={name}>{name}</option>)}
         </select></label>
         <label>UA / Client Hints version{needsBrandVersion ? " (required)" : ""}<input required={needsBrandVersion}
@@ -52,11 +55,15 @@ function FingerprintFields({ value, change, patched }: { value?: Fingerprint; ch
               field.focus();
             }
           }}
-          value={config.brandVersion} onChange={e => set({ brandVersion: e.target.value })} maxLength={32} /></label>
-        <label>Platform<select value={config.platform} onChange={e => set({ platform: e.target.value })}>
+          disabled={!config.brand} value={config.brand ? config.brandVersion : ""} onChange={e => set({ brandVersion: e.target.value })} maxLength={32} /></label>
+        <label>Platform<select value={config.platform} onChange={e => {
+          const platform = e.target.value;
+          set({ platform, platformVersion: platform && config.platform ? config.platformVersion : "" });
+        }}>
           <option value="">Browser default</option>{["windows", "linux", "macos"].map(name => <option key={name}>{name}</option>)}
         </select></label>
-        <label>Platform version<input value={config.platformVersion} onChange={e => set({ platformVersion: e.target.value })} maxLength={32} /></label>
+        <label>Platform version<input disabled={!config.platform} value={config.platform ? config.platformVersion : ""}
+          onChange={e => set({ platformVersion: e.target.value })} maxLength={32} /></label>
         <label>CPU cores<input type="number" min={1} max={128} value={config.hardwareConcurrency ?? ""}
           onChange={e => set({ hardwareConcurrency: e.target.value ? e.target.valueAsNumber : null })} /></label>
         <label>Time zone<input value={config.timezone} onChange={e => set({ timezone: e.target.value })} placeholder="America/Los_Angeles" maxLength={64} /></label>
