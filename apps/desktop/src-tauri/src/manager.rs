@@ -492,6 +492,10 @@ impl Manager {
         })
     }
 
+    pub fn default_runtime(&self) -> Option<&RuntimeInfo> {
+        self.runtime.as_ref().ok()
+    }
+
     fn rows(&self, account: &str, id: Option<&str>) -> Result<Vec<Workspace>, String> {
         let mut statement = self.db()?.prepare(
             "SELECT id,name,start_url,pid,started,exit_note,settings,created_at,trashed_at,browser_brand,browser_path,browser_version,automation_cdp FROM workspaces
