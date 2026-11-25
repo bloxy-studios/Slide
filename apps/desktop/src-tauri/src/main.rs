@@ -9,6 +9,7 @@ mod importer;
 mod manager;
 mod runtime;
 mod startup;
+mod fingerprint;
 mod sync;
 
 use catalog::{Bookmark, ItemKind, Label, Settings, Tag, TaskDraft, Template, View};
@@ -489,7 +490,9 @@ fn main() {
             let root = app.path().app_local_data_dir()?;
             let bundled = Chromium::bundled_path(&app.path().resource_dir()?);
             let bundled = (!cfg!(debug_assertions) || bundled.exists()).then_some(bundled);
-            match Manager::with_bundle(root, bundled) {
+            let fingerprint = Chromium::fingerprint_path(&app.path().resource_dir()?);
+            let fingerprint = fingerprint.exists().then_some(fingerprint);
+            match Manager::with_bundles(root, bundled, fingerprint) {
                 Ok(manager) => {
                     app.manage(Mutex::new(manager));
                 }

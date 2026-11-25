@@ -1,6 +1,6 @@
 # Bundled Chromium development installers
 
-Slide's development installers open the included ungoogled-chromium by default for new profiles. The manager displays its version, architecture and location. **Choose another browser** lets you explicitly select a compatible installed browser; **Use bundled Chromium** clears that override. Source-mode development (`bun run dev`) still discovers installed browsers.
+Slide's development installers default new profiles to fingerprint-chromium where a native build is bundled, otherwise to ungoogled-chromium. The manager displays the brand, version, architecture and location. **Choose another browser** lets you select a compatible installed browser; **Use bundled Chromium** clears that override. Existing recorded profiles do not switch browsers. Source-mode development (`bun run dev`) still discovers installed browsers.
 
 Use the [bundle command](../README.md#build-a-development-installer), not `tauri build` alone. It downloads the official release asset over HTTPS and checks it against the SHA-256 in [bundle.ts](../apps/desktop/bundle.ts). It also verifies cached assets before mounting or extracting them. CI uses the same command; the repository does not contain browser binaries.
 
@@ -11,6 +11,18 @@ Use the [bundle command](../README.md#build-a-development-installer), not `tauri
 | Windows x64 | [158.0.8127.36-1.1](https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/tag/158.0.8127.36-1.1) | [x64 portable ZIP](https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/158.0.8127.36-1.1/ungoogled-chromium_158.0.8127.36-1.1_windows_x64.zip) |
 
 These are non-prerelease builds from the official ungoogled-software macOS and Windows repositories, not Chromium continuous-build snapshots or Google Chrome Stable. The two platform projects release independently, so their versions can differ. Check the release dates rather than assuming either one already contains every Chromium security fix.
+
+| Target | Additional fingerprint-chromium runtime | Verification |
+|---|---|---|
+| macOS arm64 | [148.0.7778.215 DMG](https://github.com/adryfish/fingerprint-chromium/releases/tag/148.0.7778.215), pinned SHA-256 | Native arm64 executable and framework; launched natively and reported overridden CPU cores and time zone |
+| macOS Intel | None; the 148 DMG has no x86_64 executable slice and the 150 release contains no macOS artifact | ungoogled-chromium only; the language and WebRTC flags are available, but not seeded overrides |
+| Windows x64 | [150.0.7871.186 ZIP](https://github.com/adryfish/fingerprint-chromium/releases/tag/150.0.7871.186), pinned SHA-256 | Download and archive layout verified; not installed or run on Windows |
+
+The patched releases substantially lag Chromium Stable. SHA-256 pinning checks that the downloaded bytes match the expected asset; it does not establish security freshness, source reproducibility or provenance. Use an up-to-date browser for sensitive browsing. The original ungoogled runtime remains packaged for recorded profiles.
+
+**Advanced settings → Fingerprint** stores a per-workspace seed and allows refresh before the next cold launch. The patched runtime accepts brand/version and platform/version overrides for UA and Client Hints, CPU core count, language, time zone, WebRTC UDP restriction, and switches to opt out of the seeded Canvas, WebGL/GPU, audio, ClientRects or font changes. It chooses device memory from the seed; there is no documented override for a specific memory size, arbitrary UA string, or WebGL vendor. GPU metadata changes are platform-dependent. Device name and MAC address are local metadata, not web-exposed values. DB-IP remains a browser-side connectivity and location check; its free response does not provide a reliable time zone or language, so automatic proxy matching is not implemented. The startup page shows observed values, not the requested settings. Client Hints and device memory may be unavailable in the local startup tab; verify them in the loopback fixture instead.
+
+On an installed macOS arm64 build, a [workspace configured for 7 cores and UTC](evidence/mac-fingerprint-settings.png) reported both overrides in its [loopback fixture](evidence/mac-fingerprint-fixture.png). An opt-in Bun test launched the pinned arm64 binary with two separate profile directories and verified the requested core counts, platform, and time zone and differing canvas hashes. It does not verify every override. Run the test with `SLIDE_TEST_FINGERPRINT_BROWSER=/path/to/Chronium/executable bun run test`.
 
 Bundled ungoogled-chromium [does not include Google Safe Browsing](https://ungoogled-software.github.io/ungoogled-chromium-wiki/faq#why-is-safe-browsing-disabled). It does not provide Safe Browsing warnings for known malicious sites or downloads. Use an installed browser with that protection if you need it.
 
