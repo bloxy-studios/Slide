@@ -19,8 +19,12 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new_seed() -> i32 {
-        (Uuid::new_v4().as_u128() & i32::MAX as u128) as i32
+    pub fn ensure_seed(&mut self) -> bool {
+        if self.seed.is_some() {
+            return false;
+        }
+        self.seed = Some((Uuid::new_v4().as_u128() & i32::MAX as u128) as i32);
+        true
     }
 
     pub fn validate(&self) -> Result<(), String> {

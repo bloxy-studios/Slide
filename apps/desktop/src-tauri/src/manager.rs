@@ -610,10 +610,14 @@ impl Manager {
         name: &str,
         settings: Settings,
     ) -> Result<(), String> {
-        let settings = catalog::settings(self.db()?, account, settings)?;
+        let mut settings = catalog::settings(self.db()?, account, settings)?;
         let mut current = self.rows(account, Some(id))?.pop()
             .filter(|workspace| workspace.trashed_at.is_none())
             .ok_or("Workspace no longer exists.")?;
+        if let Some(config) = &mut settings.fingerprint {
+            config.seed = config.seed.or_else(|| current.settings.fingerprint.as_ref().and_then(|saved| saved.seed));
+            config.ensure_seed();
+        }
         if current.settings.connection != settings.connection || current.settings.fingerprint != settings.fingerprint {
             self.chromium.refresh();
             self.reconcile(&mut current)?;
@@ -1118,10 +1122,21 @@ impl Manager {
                     }
                 }
                 let (urls, defer_check) = crate::startup::launch_tabs(urls, !automation && !active && url.is_none());
+                let flags = if active {
+                    Vec::new()
+                } else {
+                    let config = workspace.settings.fingerprint.get_or_insert_with(Default::default);
+                    let added_seed = config.ensure_seed();
+                    let flags = config.flags(runtime.brand == "fingerprint-chromium");
+                    if added_seed {
+                        self.db()?.execute(
+                            "UPDATE workspaces SET settings = ?1 WHERE id = ?2",
+                            params![catalog::encode(&workspace.settings)?, id],
+                        ).map_err(db_error)?;
+                    }
+                    flags
+                };
                 let seeded = should_seed && seed_profile(&directory, &workspace.name)?;
-                let flags = workspace.settings.fingerprint.as_ref().filter(|_| !active)
-                    .map(|config| config.flags(runtime.brand == "fingerprint-chromium"))
-                    .unwrap_or_default();
                 let child = Chromium::launch(&runtime.path, &directory, &urls, reopen, &extensions, &route, debugging, &flags).map_err(|error| {
                     if seeded {
                         remove_profile_seed(&directory.join("Default"));
@@ -1173,7 +1188,7 @@ pub fn insert_workspace(
     settings: Settings,
 ) -> Result<String, String> {
     let mut settings = catalog::settings(db, account, settings)?;
-    settings.fingerprint.get_or_insert_with(Default::default).seed.get_or_insert_with(crate::fingerprint::Config::new_seed);
+    settings.fingerprint.get_or_insert_with(Default::default).ensure_seed();
     let id = Uuid::new_v4().to_string();
     db.execute("INSERT INTO workspaces (id,name,start_url,account_id,settings,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
         params![id, catalog::name(name)?, settings.launch_urls.first(), account, catalog::encode(&settings)?, catalog::now()],
@@ -1370,6 +1385,40 @@ mod tests {
         )
         .unwrap();
         app
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn legacy_fingerprint_seed_is_persisted_on_edit_and_cold_launch() {
+        let test = tempfile::tempdir().unwrap();
+        let patched = mac_browser(&test.path().join("patched"), "Chromium",
+            "org.chromium.Chromium", "148.0.7778.215");
+        let mut manager = Manager::with_bundles(test.path().into(), None, Some(patched)).unwrap();
+        let settings = Settings {
+            fingerprint: Some(crate::fingerprint::Config {
+                hardware_concurrency: Some(7), ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for edited in [true, false] {
+            let id = insert_workspace(manager.db().unwrap(), "local", "Legacy", Settings::default()).unwrap();
+            manager.db().unwrap().execute("UPDATE workspaces SET settings = ?1 WHERE id = ?2",
+                params![catalog::encode(&if edited { Settings::default() } else { settings.clone() }).unwrap(), id],
+            ).unwrap();
+            if edited {
+                manager.edit_workspace("local", &id, "Legacy", settings.clone()).unwrap();
+            } else {
+                let error = manager.perform(&id, Operation::Open).unwrap_err();
+                assert!(error.contains("Could not launch the browser"), "{error}");
+            }
+            let stored = || manager.rows("local", Some(&id)).unwrap().pop().unwrap().settings.fingerprint.unwrap();
+            let config = stored();
+            let seed = config.seed.unwrap();
+            assert!(config.flags(true).contains(&format!("--fingerprint={seed}")));
+            assert!(config.flags(true).contains(&"--fingerprint-hardware-concurrency=7".into()));
+            manager.edit_workspace("local", &id, "Legacy", settings.clone()).unwrap();
+            assert_eq!(manager.rows("local", Some(&id)).unwrap()[0].settings.fingerprint.as_ref().unwrap().seed, Some(seed));
+        }
     }
 
     #[cfg(target_os = "macos")]
