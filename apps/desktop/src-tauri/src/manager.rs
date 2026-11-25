@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 const TRANSITION_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_PROFILE_SEED_BYTES: u64 = 1024;
+const CATALOG_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,6 +131,28 @@ struct Catalog {
 
 struct CatalogLock(File);
 
+impl CatalogLock {
+    fn acquire(file: File) -> Result<Self, String> {
+        let deadline = Instant::now() + CATALOG_LOCK_TIMEOUT;
+        let contention = fs2::lock_contended_error().raw_os_error();
+        let mut backoff = Duration::from_millis(20);
+        loop {
+            match FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(Self(file)),
+                Err(error) if error.raw_os_error() == contention => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err("Another Slide Workspaces manager is already using this catalog. Quit it, then restart this window.".into());
+                    }
+                    std::thread::sleep(backoff.min(remaining));
+                    backoff = (backoff * 2).min(Duration::from_millis(200));
+                }
+                Err(error) => return Err(format!("Could not acquire the manager lock: {error}")),
+            }
+        }
+    }
+}
+
 impl Drop for CatalogLock {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.0);
@@ -170,8 +193,7 @@ impl Manager {
             .write(true)
             .open(root.join("manager.lock"))
             .map_err(|e| format!("Could not open the manager lock: {e}"))?;
-        FileExt::try_lock_exclusive(&lock).map_err(|_| "Another Slide Workspaces manager is already using this catalog. Quit it, then restart this window.")?;
-        let lock = CatalogLock(lock);
+        let lock = CatalogLock::acquire(lock)?;
         let mut db = Connection::open(root.join("catalog.sqlite3")).map_err(db_error)?;
         db.pragma_update(None, "foreign_keys", true)
             .map_err(db_error)?;
@@ -1930,6 +1952,23 @@ mod tests {
         assert_eq!(snapshot.workspaces[1].name, "Viewer");
         assert_eq!(snapshot.workspaces[1].status, Status::Closed);
         assert_ne!(snapshot.workspaces[0].id, snapshot.workspaces[1].id);
+    }
+
+    #[test]
+    fn catalog_relaunch_waits_for_previous_manager_to_release_lock() {
+        let test = tempfile::tempdir().unwrap();
+        let mut previous = Manager::new(test.path().into()).unwrap();
+        previous.create("Viewer", "").unwrap();
+        let (start, ready) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            ready.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            drop(previous);
+        });
+        start.send(()).unwrap();
+        let replacement = Manager::new(test.path().into());
+        shutdown.join().unwrap();
+        assert_eq!(replacement.unwrap().snapshot().unwrap().workspaces[0].name, "Viewer");
     }
 
     #[test]
